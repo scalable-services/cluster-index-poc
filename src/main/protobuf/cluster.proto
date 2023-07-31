@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package cluster.grpc;
+
+import "index.proto";
+import "scalapb/scalapb.proto";
+
+message KeyIndexContext {
+    bytes key = 1;
+    string rangeId = 2;
+    string lastChangeVersion = 3;
+}
+
+message RangeIndexMeta {
+    string id = 1;
+    repeated services.scalable.index.grpc.KVPair data = 2;
+    string lastChangeVersion = 3;
+    uint32 order = 4;
+    uint32 MIN = 5;
+    uint32 MAX = 6;
+}

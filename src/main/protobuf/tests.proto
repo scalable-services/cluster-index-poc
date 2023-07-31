@@ -1,0 +1,6 @@
+syntax = "proto3";
+
+package cluster.grpc.tests;
+
+import "index.proto";
+import "scalapb/scalapb.proto";
