@@ -6,7 +6,7 @@ import helpers.TestHelper
 import org.apache.commons.lang3.RandomStringUtils
 import org.scalatest.matchers.should.Matchers
 import services.scalable.index.Commands.Insert
-import services.scalable.index.DefaultComparators
+import services.scalable.index.{DefaultComparators, DefaultPrinters, DefaultSerializers}
 
 import java.util.UUID
 import java.util.concurrent.ThreadLocalRandom
@@ -33,6 +33,8 @@ class RangeIndexSpec extends Repeatable with Matchers {
 
     implicit val session = TestHelper.getSession()
 
+    TestHelper.truncateAll()
+
     val uuid = UUID.randomUUID().toString
 
     val order = rand.nextInt(4, 1000)
@@ -49,6 +51,16 @@ class RangeIndexSpec extends Repeatable with Matchers {
       case None => TestHelper.createRange(rangeMeta).map(_ => rangeMeta)
       case Some(range) => Future.successful(range)
     }, Duration.Inf)
+
+    implicit val rangeBuilder = RangeBuilder[K, V]()(
+      ordering,
+      session,
+      global,
+      DefaultSerializers.stringSerializer,
+      DefaultSerializers.stringSerializer,
+      k => k,
+      v => v
+    )
 
     val left = new RangeIndex[K, V](crange)
 
@@ -129,7 +141,6 @@ class RangeIndexSpec extends Repeatable with Matchers {
 
     assert((leftInOrder ++ rightInOder) == all)
 
-    Await.result(TestHelper.truncateRanges(), Duration.Inf)
     session.close()
   }
 

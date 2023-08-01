@@ -4,6 +4,8 @@ import cluster.{KEYSPACE, loader}
 import cluster.grpc._
 import com.datastax.oss.driver.api.core.CqlSession
 import com.google.protobuf.any.Any
+import services.scalable.index.{AsyncIndexIterator, Storage, Tuple}
+import services.scalable.index.grpc.IndexContext
 
 import java.nio.ByteBuffer
 import scala.concurrent.{ExecutionContext, Future}
@@ -39,11 +41,33 @@ object TestHelper {
     }
   }
 
-  def truncateRanges()(implicit session: CqlSession, ec: ExecutionContext): Future[Boolean] = {
-    val stm = session.prepare("TRUNCATE TABLE ranges;").bind()
+  def truncateAll()(implicit session: CqlSession, ec: ExecutionContext): Unit = {
+    println("truncate ranges: ", session.execute("TRUNCATE TABLE ranges;").wasApplied())
+    println("truncate indexes: ", session.execute("TRUNCATE TABLE indexes;").wasApplied())
+  }
 
-    session.executeAsync(stm).toCompletableFuture.asScala.map { r =>
-      r.wasApplied()
+  def loadOrCreateIndex(tctx: IndexContext)(implicit storage: Storage, ec: ExecutionContext): Future[Option[IndexContext]] = {
+    storage.loadIndex(tctx.id).flatMap {
+      case None => storage.createIndex(tctx).map(_ => Some(tctx))
+      case Some(t) => Future.successful(Some(t))
+    }
+  }
+
+  def loadIndex(id: String)(implicit storage: Storage, ec: ExecutionContext): Future[Option[IndexContext]] = {
+    storage.loadIndex(id).flatMap {
+      case None => Future.successful(None)
+      case Some(t) => Future.successful(Some(t))
+    }
+  }
+
+  def all[K, V](it: AsyncIndexIterator[Seq[Tuple[K, V]]])(implicit ec: ExecutionContext): Future[Seq[Tuple[K, V]]] = {
+    it.hasNext().flatMap {
+      case true => it.next().flatMap { list =>
+        all(it).map {
+          list ++ _
+        }
+      }
+      case false => Future.successful(Seq.empty[Tuple[K, V]])
     }
   }
 
