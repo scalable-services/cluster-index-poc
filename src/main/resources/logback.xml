@@ -17,7 +17,8 @@
     </appender>
 
     <logger name="services.scalable.index" level="ERROR"></logger>
-    <!--<logger name="org.apache.kafka" level="info"></logger> -->
+    <logger name="org.apache.kafka" level="ERROR"></logger>
+    <logger name="com.datastax.oss.driver" level="ERROR"></logger>
 
     <appender name="ASYNC" class="ch.qos.logback.classic.AsyncAppender">
         <queueSize>1024</queueSize>

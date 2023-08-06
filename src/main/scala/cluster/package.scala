@@ -1,15 +1,14 @@
 import cluster.grpc.KeyIndexContext
 import com.datastax.oss.driver.api.core.config.{DefaultDriverOption, DriverConfigLoader}
 import com.google.protobuf.any.Any
-import services.scalable.index.grpc.IndexContext
-import services.scalable.index.impl.GrpcByteSerializer
+import services.scalable.index.impl.{GrpcByteSerializer, GrpcCommandSerializer}
 import services.scalable.index.{Bytes, Serializer}
 
 package object cluster {
 
-  val ORDER = 10
+  /*val ORDER = 10
   val MIN = ORDER / 2
-  val MAX = ORDER
+  val MAX = ORDER*/
 
   val KEYSPACE = "history"
 
@@ -28,13 +27,8 @@ package object cluster {
       .build()
 
   object Serializers {
+
     import services.scalable.index.DefaultSerializers._
-
-    implicit val metaIndexSerializer = new Serializer[IndexContext] {
-      override def serialize(t: IndexContext): Bytes = Any.pack(t).toByteArray
-
-      override def deserialize(b: Bytes): IndexContext = Any.parseFrom(b).unpack(IndexContext)
-    }
 
     implicit val keyIndexSerializer = new Serializer[KeyIndexContext] {
       override def serialize(t: KeyIndexContext): Bytes = Any.pack(t).toByteArray
@@ -43,6 +37,11 @@ package object cluster {
     }
 
     implicit val grpcStringKeyIndexContextSerializer = new GrpcByteSerializer[String, KeyIndexContext]()
+
+    implicit val grpcStringStringCommandsSerializer = new GrpcCommandSerializer[String, String]()
+    implicit val grpcStringKeyIndexContextCommandsSerializer = new GrpcCommandSerializer[String, KeyIndexContext]()
+    implicit val grpcRangeCommandSerializer = new GrpcRangeCommandSerializer[String, String]()
+    implicit val grpcMetaCommandSerializer = new GrpcMetaCommandSerializer[String]()
   }
 
   object Printers {

@@ -1,8 +1,8 @@
 package cluster
 
 import cluster.grpc.RangeIndexMeta
+import cluster.helpers.{TestConfig, TestHelper}
 import com.datastax.oss.driver.api.core.CqlSession
-import helpers.TestHelper
 import org.apache.commons.lang3.RandomStringUtils
 import org.scalatest.matchers.should.Matchers
 import services.scalable.index.Commands.Insert
@@ -52,14 +52,16 @@ class RangeIndexSpec extends Repeatable with Matchers {
       case Some(range) => Future.successful(range)
     }, Duration.Inf)
 
-    implicit val rangeBuilder = RangeBuilder[K, V]()(
+    implicit val rangeBuilder = RangeBuilder[K, V](TestConfig.MAX_RANGE_ITEMS)(
       ordering,
       session,
       global,
       DefaultSerializers.stringSerializer,
       DefaultSerializers.stringSerializer,
       k => k,
-      v => v
+      v => v,
+      Serializers.grpcRangeCommandSerializer,
+      Serializers.grpcMetaCommandSerializer
     )
 
     val left = new RangeIndex[K, V](crange)

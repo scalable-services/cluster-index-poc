@@ -1,8 +1,8 @@
 package cluster
 
 import cluster.grpc.{KeyIndexContext, RangeIndexMeta}
+import cluster.helpers.{TestConfig, TestHelper}
 import com.google.protobuf.ByteString
-import helpers.TestHelper
 import services.scalable.index.Commands.{Insert, Remove, Update}
 import services.scalable.index.Errors.IndexError
 import services.scalable.index.grpc.IndexContext
@@ -129,6 +129,8 @@ class ClusterIndex[K, V](val metaContext: IndexContext, val maxNItems: Int)(impl
     val remaining = lindex.builder.MAX - lindex.length
     val n = Math.min(remaining, list.length)
     val slice = list.slice(0, n)
+
+    assert(remaining >= 0)
 
     if (remaining == 0) {
       val rindex = lindex.split()
@@ -360,6 +362,35 @@ class ClusterIndex[K, V](val metaContext: IndexContext, val maxNItems: Int)(impl
 
       range.inOrder()
     }.flatten
+  }
+
+}
+
+object ClusterIndex {
+
+  def fromRangeIndexId[K, V](rangeId: String, maxNItems: Int)(implicit rangeBuilder: RangeBuilder[K, V],
+                                               clusterBuilder: IndexBuilder[K, KeyIndexContext]): Future[ClusterIndex[K, V]] = {
+    import rangeBuilder._
+
+    val metaCtx = IndexContext()
+      .withId(UUID.randomUUID.toString)
+      .withMaxNItems(Int.MaxValue)
+      .withLevels(0)
+      .withNumLeafItems(Int.MaxValue)
+      .withNumMetaItems(Int.MaxValue)
+
+    def construct(rangeCtx: RangeIndexMeta): Future[ClusterIndex[K, V]] = {
+      val rangeIndex = new RangeIndex[K, V](rangeCtx)
+
+      val cindex = new ClusterIndex[K, V](metaCtx, maxNItems)
+      val max = rangeIndex.max._1
+
+      cindex.ranges.put(rangeId, rangeIndex)
+      cindex.meta.insert(Seq(Tuple3(max, KeyIndexContext(ByteString.copyFrom(rangeBuilder.ks.serialize(max)),
+        rangeId, rangeCtx.lastChangeVersion), false)), cindex.meta.ctx.id).map(_ => cindex)
+    }
+
+    TestHelper.getRange(rangeId).map(_.get).flatMap(construct)
   }
 
 }

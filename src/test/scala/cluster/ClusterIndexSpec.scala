@@ -1,8 +1,9 @@
 package cluster
 
-import cluster.grpc.KeyIndexContext
+import cluster.ClusterCommands.RangeCommand
+import cluster.grpc.{KeyIndexContext, RangeTask}
+import cluster.helpers.{TestConfig, TestHelper}
 import com.google.protobuf.ByteString
-import helpers.{TestConfig, TestHelper}
 import org.apache.commons.lang3.RandomStringUtils
 import org.scalatest.matchers.should.Matchers
 import services.scalable.index.Commands.Insert
@@ -45,14 +46,16 @@ class ClusterIndexSpec extends Repeatable with Matchers {
     //implicit val storage = new MemoryStorage()
     implicit val storage = new CassandraStorage(session, true)
 
-    val rangeBuilder = RangeBuilder[K, V](ORDER = 64)(
+    val rangeBuilder = RangeBuilder[K, V](ORDER = TestConfig.MAX_RANGE_ITEMS)(
       ordering,
       session,
       global,
       DefaultSerializers.stringSerializer,
       DefaultSerializers.stringSerializer,
       k => k,
-      v => v
+      v => v,
+      Serializers.grpcRangeCommandSerializer,
+      Serializers.grpcMetaCommandSerializer
     )
 
     val clusterMetaBuilder = IndexBuilder.create[K, KeyIndexContext](DefaultComparators.ordString,
@@ -132,7 +135,7 @@ class ClusterIndexSpec extends Repeatable with Matchers {
     val version = UUID.randomUUID.toString
 
     var commands: Seq[Commands.Command[K, V]] = insert()
-    val br = Await.result(cindex.execute(commands, version)/*.flatMap(_ => cindex.save())*/, Duration.Inf)
+    val ctx = Await.result(cindex.execute(commands, version).flatMap(_ => cindex.save()), Duration.Inf)
 
     var dataSorted = data.sortBy(_._1).toList
     var rangeData = cindex.inOrder().toList
@@ -146,11 +149,12 @@ class ClusterIndexSpec extends Repeatable with Matchers {
     val cindex2 = new ClusterIndex[K, V](metaContext2, TestConfig.MAX_RANGE_ITEMS)(rangeBuilder, clusterMetaBuilder)*/
 
     data = rangeData
-    val updateCommands = update()
-    val removalCommands = remove()
+   // val updateCommands = update()
+  //  val removalCommands = remove()
+    val insertCommands = insert()
 
-    commands = updateCommands ++ removalCommands
-    val br2 = Await.result(cindex.execute(commands, version).flatMap(_ => cindex.save()), Duration.Inf)
+    commands = /*updateCommands ++ removalCommands ++*/ insertCommands
+    /*val br2 = Await.result(cindex.execute(commands, version).flatMap(_ => cindex.save()), Duration.Inf)
 
     dataSorted = data.sortBy(_._1).toList
     rangeData = cindex.inOrder().toList
@@ -159,6 +163,22 @@ class ClusterIndexSpec extends Repeatable with Matchers {
     println(s"${Console.YELLOW_B}range data: ${rangeData.map { case (k, v, _) => k -> v }}${Console.RESET}")
 
     assert(rangeData.map{case (k, v, _) => k -> v} == dataSorted.map{case (k, v, _) => k -> v})
+
+    val rc = RangeCommand("1", "index-1", commands, UUID.randomUUID.toString)
+
+    val rcs = Serializers.grpcRangeCommandSerializer.serialize(rc)
+    val rds = Serializers.grpcRangeCommandSerializer.deserialize(rcs)*/
+
+    val client = new ClusterClient[K, V](ctx)(clusterMetaBuilder, session, Serializers.grpcRangeCommandSerializer)
+
+    val rangeCommands = Await.result(client.execute(commands), Duration.Inf)
+
+    val response = Await.result(client.sendTasks(rangeCommands.values.toSeq), Duration.Inf)
+
+    val listIndex = data.sortBy(_._1)
+    println(s"${Console.YELLOW_B}listindex after range cmds inserted: ${TestHelper.saveListIndex(s"after-$indexId", listIndex, storage.session, rangeBuilder.ks, rangeBuilder.vs)}${Console.RESET}")
+
+    println(s"sent tasks: ${response}")
 
     Await.result(storage.close(), Duration.Inf)
     session.close()

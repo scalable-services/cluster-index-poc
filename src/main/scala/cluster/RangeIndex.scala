@@ -1,8 +1,8 @@
 package cluster
 
 import cluster.grpc.RangeIndexMeta
+import cluster.helpers.TestHelper
 import com.google.protobuf.ByteString
-import helpers.TestHelper
 import services.scalable.index.Commands.{Command, Insert, Remove, Update}
 import services.scalable.index.grpc.KVPair
 import services.scalable.index.{BatchResult, Errors, InsertionResult, RemovalResult, UpdateResult}
@@ -175,8 +175,8 @@ class RangeIndex[K, V](var meta: RangeIndexMeta)(implicit val builder: RangeBuil
   }
 
   def save(): Future[Boolean] = {
-    val snap = serialize()
-    TestHelper.saveRange(snap)
+    meta = serialize()
+    TestHelper.saveRange(meta)
   }
 
 }
@@ -184,5 +184,16 @@ class RangeIndex[K, V](var meta: RangeIndexMeta)(implicit val builder: RangeBuil
 object RangeIndex {
   def fromCtx[K, V](ctx: RangeIndexMeta)(implicit builder: RangeBuilder[K, V]): RangeIndex[K, V] = {
     new RangeIndex[K, V](ctx)(builder)
+  }
+
+  def fromId[K, V](id: String)(implicit builder: RangeBuilder[K, V]): Future[RangeIndex[K, V]] = {
+    import builder._
+
+    for {
+      ctx <- TestHelper.getRange(id).map(_.get)
+      index = new RangeIndex[K, V](ctx)
+    } yield {
+      index
+    }
   }
 }

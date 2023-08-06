@@ -5,6 +5,13 @@ package cluster.grpc;
 import "index.proto";
 import "scalapb/scalapb.proto";
 
+option (scalapb.options) = {
+    single_file: true
+    flat_package: true
+    preserve_unknown_fields: false
+    preamble: "trait ClusterIndexCommand"
+};
+
 message KeyIndexContext {
     bytes key = 1;
     string rangeId = 2;
@@ -19,3 +26,32 @@ message RangeIndexMeta {
     uint32 MIN = 5;
     uint32 MAX = 6;
 }
+
+message MetaTask {
+    option (scalapb.message).extends = "cluster.grpc.ClusterIndexCommand";
+
+    string id = 1;
+    string metaId = 2;
+    repeated bytes commands = 3;
+    string responseTopic = 4;
+}
+
+message RangeTask {
+    option (scalapb.message).extends = "cluster.grpc.ClusterIndexCommand";
+
+    string id = 1;
+    string rangeId = 2;
+    repeated bytes commands = 3;
+    string lastChangeVersion = 4;
+}
+
+message MetaTaskResponse {
+    option (scalapb.message).extends = "cluster.grpc.ClusterIndexCommand";
+
+    string id = 1;
+    string metaId = 2;
+    string responseTopic = 3;
+    bool ok = 4;
+    services.scalable.index.grpc.IndexContext metaCtx = 5;
+}
+

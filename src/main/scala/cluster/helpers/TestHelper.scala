@@ -1,17 +1,47 @@
-package helpers
+package cluster.helpers
 
 import cluster.{KEYSPACE, loader}
 import cluster.grpc._
+import cluster.grpc.tests.ListIndex
 import com.datastax.oss.driver.api.core.CqlSession
+import com.google.protobuf.ByteString
 import com.google.protobuf.any.Any
-import services.scalable.index.{AsyncIndexIterator, Storage, Tuple}
-import services.scalable.index.grpc.IndexContext
+import services.scalable.index.{AsyncIndexIterator, Serializer, Storage, Tuple}
+import services.scalable.index.grpc.{IndexContext, KVPair}
 
 import java.nio.ByteBuffer
 import scala.concurrent.{ExecutionContext, Future}
+import scala.jdk.CollectionConverters.CollectionHasAsScala
 import scala.jdk.FutureConverters.CompletionStageOps
 
 object TestHelper {
+
+  def saveListIndex[K, V](id: String, data: Seq[(K, V, String)], session: CqlSession,
+                          kser: Serializer[K], vser: Serializer[V]): Boolean = {
+    val listIndex = ListIndex(id, data.map { case (k, v, _) =>
+      KVPair().withKey(ByteString.copyFrom(kser.serialize(k)))
+        .withValue(ByteString.copyFrom(vser.serialize(v)))
+    })
+
+    val serializedListIndex = Any.pack(listIndex).toByteArray
+
+    val ustm = session.prepare(s"INSERT INTO history.test_indexes(id, data) values (?, ?);")
+    val bind = ustm.bind(id, ByteBuffer.wrap(serializedListIndex))
+
+    //bind.setString(0, id)
+    //bind.setByteBuffer("data", ByteBuffer.wrap(serializedListIndex))
+
+    session.execute(bind).wasApplied()
+  }
+
+  def loadListIndex(id: String, session: CqlSession): Option[ListIndex] = {
+    val ustm = session.prepare(s"select * from test_indexes where id = ?;")
+    val bind = ustm.bind(id)
+
+    session.execute(bind).all().asScala.map { r =>
+      Any.parseFrom(r.getByteBuffer("data").flip().array()).unpack(ListIndex)
+    }.headOption
+  }
 
   def createRange(range: RangeIndexMeta)(implicit session: CqlSession, ec: ExecutionContext): Future[Boolean] = {
     val stm = session.prepare("INSERT INTO ranges(id, data) VALUES(?, ?);")
