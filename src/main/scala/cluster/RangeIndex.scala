@@ -44,7 +44,7 @@ class RangeIndex[K, V](var meta: RangeIndexMeta)(implicit val builder: RangeBuil
     InsertionResult(true, len, None)
   }
 
-  def update(data: Seq[Tuple3[K, V, Option[String]]], version: String):UpdateResult = {
+  def update(data: Seq[Tuple3[K, V, Option[String]]], version: String): UpdateResult = {
     if (data.exists { case (k, _, _) => !tuples.exists { case (k1, _, _) => ordering.equiv(k1, k) } }) {
       return UpdateResult(false, 0, Some(Errors.LEAF_KEY_NOT_FOUND(data.map(_._1), kts)))
     }
@@ -80,7 +80,7 @@ class RangeIndex[K, V](var meta: RangeIndexMeta)(implicit val builder: RangeBuil
     RemovalResult(true, keys.length, None)
   }
 
-  def execute(cmds: Seq[Command[K, V]], version: String = ctxId): BatchResult = {
+  def execute(cmds: Seq[Command[K, V]], version: String): BatchResult = {
     val maxBefore: Option[K] = if(isEmpty()) None else Some(max._1)
 
     for(i<-0 until cmds.length){

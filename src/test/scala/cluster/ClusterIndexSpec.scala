@@ -35,6 +35,8 @@ class ClusterIndexSpec extends Repeatable with Matchers {
 
     TestHelper.truncateAll()
 
+    val version = TestConfig.TX_VERSION//UUID.randomUUID.toString
+
     val order = rand.nextInt(4, 1000)
     val min = order / 2
     val max = order
@@ -78,9 +80,9 @@ class ClusterIndexSpec extends Repeatable with Matchers {
         }
       }
 
-      data = data ++ list.map { case (k, v, _) => Tuple3(k, v, UUID.randomUUID.toString) }
+      data = data ++ list.map { case (k, v, _) => Tuple3(k, v, version) }
 
-      Seq(Insert(indexId, list))
+      Seq(Insert(indexId, list, Some(version)))
     }
 
     def update(): Seq[Commands.Command[K, V]] = {
@@ -102,13 +104,13 @@ class ClusterIndexSpec extends Repeatable with Matchers {
       data = data.filterNot { case (k, _, _) => list.exists { case (k1, _, _) => ordering.equiv(k, k1) } }
       data = data ++ updates.map { case (k, v, lv) => (k, v, lv.get) }
 
-      Seq(Commands.Update(indexId, updates))
+      Seq(Commands.Update(indexId, updates, Some(version)))
     }
 
     def remove(): Seq[Commands.Command[K, V]] = {
       val time = System.nanoTime()
 
-      val n = if (data.length >= 2) rand.nextInt(1, data.length) else 1
+      val n = (data.length * 0.85).toInt //if (data.length >= 2) rand.nextInt(1, data.length) else 1
 
       val list = scala.util.Random.shuffle(data).slice(0, n).map { case (k, _, lv) =>
         (k, Some(lv))
@@ -121,7 +123,7 @@ class ClusterIndexSpec extends Repeatable with Matchers {
 
       data = data.filterNot { case (k, _, _) => list.exists { case (k1, _) => ordering.equiv(k, k1) } }
 
-      Seq(Commands.Remove[K, V](indexId, list))
+      Seq(Commands.Remove[K, V](indexId, list, Some(version)))
     }
 
     val metaContext = Await.result(TestHelper.loadOrCreateIndex(IndexContext(
@@ -131,8 +133,6 @@ class ClusterIndexSpec extends Repeatable with Matchers {
     ).withMaxNItems(Int.MaxValue)), Duration.Inf).get
 
     val cindex = new ClusterIndex[K, V](metaContext, TestConfig.MAX_RANGE_ITEMS)(rangeBuilder, clusterMetaBuilder)
-
-    val version = UUID.randomUUID.toString
 
     var commands: Seq[Commands.Command[K, V]] = insert()
     val ctx = Await.result(cindex.execute(commands, version).flatMap(_ => cindex.save()), Duration.Inf)
@@ -145,31 +145,30 @@ class ClusterIndexSpec extends Repeatable with Matchers {
 
     assert(rangeData.map{case (k, v, _) => k -> v} == dataSorted.map{case (k, v, _) => k -> v})
 
-    /*val metaContext2 = Await.result(TestHelper.loadIndex(metaContext.id), Duration.Inf).get
-    val cindex2 = new ClusterIndex[K, V](metaContext2, TestConfig.MAX_RANGE_ITEMS)(rangeBuilder, clusterMetaBuilder)*/
-
     data = rangeData
-   // val updateCommands = update()
-  //  val removalCommands = remove()
+    val updateCommands = update()
+    val removalCommands = remove()
     val insertCommands = insert()
 
-    commands = /*updateCommands ++ removalCommands ++*/ insertCommands
-    /*val br2 = Await.result(cindex.execute(commands, version).flatMap(_ => cindex.save()), Duration.Inf)
+    commands = updateCommands ++ removalCommands ++ insertCommands
+
+    /*val metaContext2 = Await.result(TestHelper.loadIndex(metaContext.id), Duration.Inf).get
+    val cindex2 = new ClusterIndex[K, V](metaContext2, TestConfig.MAX_RANGE_ITEMS)(rangeBuilder, clusterMetaBuilder)
+
+    val br2 = Await.result(cindex2.execute(commands, version).flatMap(_ => cindex2.save()), Duration.Inf)
 
     dataSorted = data.sortBy(_._1).toList
-    rangeData = cindex.inOrder().toList
+    rangeData = cindex2.inOrder().toList
 
     println(s"${Console.GREEN_B}ref data: ${dataSorted.map { case (k, v, _) => k -> v }}${Console.RESET}")
     println(s"${Console.YELLOW_B}range data: ${rangeData.map { case (k, v, _) => k -> v }}${Console.RESET}")
 
-    assert(rangeData.map{case (k, v, _) => k -> v} == dataSorted.map{case (k, v, _) => k -> v})
-
-    val rc = RangeCommand("1", "index-1", commands, UUID.randomUUID.toString)
-
-    val rcs = Serializers.grpcRangeCommandSerializer.serialize(rc)
-    val rds = Serializers.grpcRangeCommandSerializer.deserialize(rcs)*/
+    assert(rangeData.map{case (k, v, _) => k -> v} == dataSorted.map{case (k, v, _) => k -> v})*/
 
     val client = new ClusterClient[K, V](ctx)(clusterMetaBuilder, session, Serializers.grpcRangeCommandSerializer)
+
+    assert(commands.forall(x => x.version.isDefined && x.version.get == TestConfig.TX_VERSION))
+    assert(data.forall(x => x._3 == TestConfig.TX_VERSION))
 
     val rangeCommands = Await.result(client.execute(commands), Duration.Inf)
 

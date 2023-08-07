@@ -74,6 +74,7 @@ object TestHelper {
   def truncateAll()(implicit session: CqlSession, ec: ExecutionContext): Unit = {
     println("truncate ranges: ", session.execute("TRUNCATE TABLE ranges;").wasApplied())
     println("truncate indexes: ", session.execute("TRUNCATE TABLE indexes;").wasApplied())
+    println("truncate indexes: ", session.execute("TRUNCATE TABLE blocks;").wasApplied())
   }
 
   def loadOrCreateIndex(tctx: IndexContext)(implicit storage: Storage, ec: ExecutionContext): Future[Option[IndexContext]] = {

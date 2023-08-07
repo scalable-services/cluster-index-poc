@@ -74,18 +74,18 @@ class ClusterClient[K, V](val metaCtx: IndexContext)(implicit val metaBuilder: I
         case None =>
           //println("none")
           list.length
-        case Some((last, dbCtx, version)) =>
+        case Some((last, dbCtx, _)) =>
 
           val idx = list.indexWhere { case (k, _, _) => ord.gt(k, last) }
           if (idx > 0) list = list.slice(0, idx)
 
           //println(s"${Thread.currentThread().threadId()} seeking range for slice from ${pos}: ${list.map{x => new String(x._1.asInstanceOf[Bytes])}}")
 
-          val c = Commands.Insert[K, V](dbCtx.id, list)
+          val cmd = Commands.Insert[K, V](c.indexId, list, c.version)
 
           ranges.get(dbCtx.id) match {
-            case None => ranges.put(dbCtx.id, dbCtx.lastChangeVersion -> Seq(c))
-            case Some((lastCV, cmdList)) => ranges.update(dbCtx.id, lastCV -> (cmdList :+ c))
+            case None => ranges.put(dbCtx.id, dbCtx.lastChangeVersion -> Seq(cmd))
+            case Some((lastCV, cmdList)) => ranges.update(dbCtx.id, lastCV -> (cmdList :+ cmd))
           }
 
           list.length
@@ -121,11 +121,11 @@ class ClusterClient[K, V](val metaCtx: IndexContext)(implicit val metaBuilder: I
           val idx = list.indexWhere { case (k, vs) => ord.gt(k, last) }
           if (idx > 0) list = list.slice(0, idx)
 
-          val c = Commands.Remove[K, V]("main", list)
+          val cmd = Commands.Remove[K, V](c.indexId, list, c.version)
 
           ranges.get(leafId.id) match {
-            case None => ranges.put(leafId.id, leafId.lastChangeVersion -> Seq(c))
-            case Some((lastCV, cmdList)) => ranges.update(leafId.id, lastCV -> (cmdList :+ c))
+            case None => ranges.put(leafId.id, leafId.lastChangeVersion -> Seq(cmd))
+            case Some((lastCV, cmdList)) => ranges.update(leafId.id, lastCV -> (cmdList :+ cmd))
           }
 
           list.length
@@ -161,11 +161,11 @@ class ClusterClient[K, V](val metaCtx: IndexContext)(implicit val metaBuilder: I
           val idx = list.indexWhere { case (k, _, _) => ord.gt(k, last) }
           if (idx > 0) list = list.slice(0, idx)
 
-          val c = Commands.Update[K, V]("main", list)
+          val cmd = Commands.Update[K, V](c.indexId, list, c.version)
 
           ranges.get(leafId.id) match {
-            case None => ranges.put(leafId.id, leafId.lastChangeVersion -> Seq(c))
-            case Some((lastCV, cmdList)) => ranges.update(leafId.id, lastCV -> (cmdList :+ c))
+            case None => ranges.put(leafId.id, leafId.lastChangeVersion -> Seq(cmd))
+            case Some((lastCV, cmdList)) => ranges.update(leafId.id, lastCV -> (cmdList :+ cmd))
           }
 
           list.length

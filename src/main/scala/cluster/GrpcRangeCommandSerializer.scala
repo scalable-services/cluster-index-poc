@@ -12,7 +12,8 @@ final class GrpcRangeCommandSerializer[K, V](implicit val commandsSerializer: Se
     Any.pack(RangeTask(
       t.id,
       t.rangeId,
-      t.commands.map { c => ByteString.copyFrom(commandsSerializer.serialize(c)) }, t.lastChangeVersion),
+      t.commands.map { c => ByteString.copyFrom(commandsSerializer.serialize(c)) },
+      t.lastChangeVersion),
     ).toByteArray
   }
 
