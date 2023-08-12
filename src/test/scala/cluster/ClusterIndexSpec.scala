@@ -1,17 +1,14 @@
 package cluster
 
-import cluster.ClusterCommands.RangeCommand
-import cluster.grpc.{KeyIndexContext, RangeTask}
+import cluster.grpc.KeyIndexContext
 import cluster.helpers.{TestConfig, TestHelper}
-import com.google.protobuf.ByteString
 import org.apache.commons.lang3.RandomStringUtils
 import org.scalatest.matchers.should.Matchers
 import services.scalable.index.Commands.Insert
 import services.scalable.index.grpc.IndexContext
 import services.scalable.index.impl.{CassandraStorage, DefaultCache}
-import services.scalable.index.{Commands, DefaultComparators, DefaultIdGenerators, DefaultSerializers, IndexBuilder, QueryableIndex}
+import services.scalable.index.{Commands, DefaultComparators, DefaultIdGenerators, DefaultSerializers, IndexBuilder}
 
-import java.util.UUID
 import java.util.concurrent.ThreadLocalRandom
 import scala.concurrent.Await
 import scala.concurrent.ExecutionContext.Implicits.global
@@ -177,8 +174,6 @@ class ClusterIndexSpec extends Repeatable with Matchers {
 
     val response = Await.result(client.sendTasks(rangeCommands.values.toSeq), Duration.Inf)
 
-    Thread.sleep(5000)
-
     val indexDataFromDisk = LoadIndexDemo.loadAll().toList
     val listDataFromDisk = LoadIndexDemo.loadListIndex(indexId).toList
 
@@ -191,7 +186,7 @@ class ClusterIndexSpec extends Repeatable with Matchers {
 
     println(s"sent tasks: ${response}")
 
-    Await.result(storage.close(), Duration.Inf)
+    Await.result(storage.close().flatMap(_ => client.system.terminate()), Duration.Inf)
     session.close()
   }
 
