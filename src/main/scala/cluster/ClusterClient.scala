@@ -1,23 +1,24 @@
 package cluster
 
 import akka.actor.ActorSystem
-import akka.kafka.ProducerSettings
-import akka.kafka.scaladsl.Producer
-import akka.stream.scaladsl.Source
+import akka.kafka.{CommitDelivery, CommitterSettings, ConsumerMessage, ConsumerSettings, ProducerSettings, Subscriptions}
+import akka.kafka.scaladsl.{Committer, Consumer, Producer}
+import akka.stream.scaladsl.{Sink, Source}
 import cluster.ClusterCommands.RangeCommand
-import cluster.grpc.{ClusterIndexCommand, KeyIndexContext, MetaTask, RangeIndexMeta, RangeTask}
+import cluster.grpc.{ClusterIndexCommand, KeyIndexContext, MetaTask, RangeIndexMeta, RangeTask, RangeTaskResponse}
 import cluster.helpers.{TestConfig, TestHelper}
 import com.datastax.oss.driver.api.core.CqlSession
 import com.google.protobuf.any.Any
+import org.apache.kafka.clients.consumer.ConsumerConfig
 import org.apache.kafka.clients.producer.ProducerRecord
-import org.apache.kafka.common.serialization.{ByteArraySerializer, StringSerializer}
+import org.apache.kafka.common.serialization.{ByteArrayDeserializer, ByteArraySerializer, StringDeserializer, StringSerializer}
 import services.scalable.index.grpc.IndexContext
 import services.scalable.index.{Bytes, Commands, IndexBuilder, QueryableIndex}
 
 import java.util.UUID
 import scala.collection.concurrent.TrieMap
 import scala.concurrent.duration.Duration
-import scala.concurrent.{Await, Future}
+import scala.concurrent.{Await, Future, Promise}
 import scala.util.hashing.MurmurHash3
 
 class ClusterClient[K, V](val metaCtx: IndexContext)(implicit val metaBuilder: IndexBuilder[K, KeyIndexContext],
@@ -34,6 +35,8 @@ class ClusterClient[K, V](val metaCtx: IndexContext)(implicit val metaBuilder: I
   val kafkaProducer = producerSettings.createKafkaProducer()
   val settingsWithProducer = producerSettings.withProducer(kafkaProducer)
 
+  val rangeTasks = TrieMap.empty[String, Promise[Boolean]]
+
   def sendTasks(tasks: Seq[RangeCommand[K, V]]): Future[Boolean] = {
     val records = tasks.map { rc =>
       val id = MurmurHash3.stringHash(rc.rangeId).abs % TestConfig.N_PARTITIONS
@@ -41,8 +44,15 @@ class ClusterClient[K, V](val metaCtx: IndexContext)(implicit val metaBuilder: I
         rangeCommandSerializer.serialize(rc))
     }
 
+    val futures = tasks.map { t =>
+      val promise = Promise[Boolean]()
+      rangeTasks.put(t.id, promise)
+      promise.future
+    }
+
     Source(records)
-      .runWith(Producer.plainSink(settingsWithProducer)).map(_ => true)
+      .runWith(Producer.plainSink(settingsWithProducer))
+      .flatMap(_ => Future.sequence(futures).map(_.forall(_ == true)))
   }
 
   val meta = new QueryableIndex[K, KeyIndexContext](metaCtx)(metaBuilder)
@@ -190,5 +200,38 @@ class ClusterClient[K, V](val metaCtx: IndexContext)(implicit val metaBuilder: I
     Future.successful(ranges.map{case (rangeId, (lastVersion, list)) => rangeId ->
       RangeCommand(UUID.randomUUID.toString, rangeId, list, lastVersion)})
   }
+
+  val clientId = UUID.randomUUID.toString
+
+  val consumerSettings = ConsumerSettings[String, Array[Byte]](system, new StringDeserializer, new ByteArrayDeserializer)
+    .withBootstrapServers("localhost:9092")
+    .withGroupId(clientId)
+    .withProperty(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest")
+    .withClientId(s"range-task-worker-${clientId}")
+  //.withPollInterval(java.time.Duration.ofMillis(10L))
+  // .withStopTimeout(java.time.Duration.ofHours(1))
+  //.withProperty(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, "1")
+  //.withStopTimeout(java.time.Duration.ofSeconds(1000L))
+
+  val committerSettings = CommitterSettings(system).withDelivery(CommitDelivery.waitForAck)
+
+  def handler(msg: ConsumerMessage.CommittableMessage[String, Array[Byte]]): Future[Boolean] = {
+    val r = Any.parseFrom(msg.record.value()).unpack(RangeTaskResponse)
+
+    rangeTasks.remove(r.id).map(_.success(r.ok))
+
+    Future.successful(true)
+  }
+
+  Consumer
+    .committableSource(consumerSettings, Subscriptions.topics(TestConfig.CLIENT_TOPIC))
+    .mapAsync(1) { msg =>
+      handler(msg).map(_ => msg.committableOffset)
+    }
+    .via(Committer.flow(committerSettings.withMaxBatch(1)))
+    .runWith(Sink.ignore)
+    .recover {
+      case e: RuntimeException => e.printStackTrace()
+    }
 
 }

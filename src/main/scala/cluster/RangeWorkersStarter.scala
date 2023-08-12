@@ -1,5 +1,6 @@
 package cluster
 
+import akka.actor.ActorSystem
 import cluster.grpc.KeyIndexContext
 import cluster.helpers.{TestConfig, TestHelper}
 import services.scalable.index.impl.{CassandraStorage, DefaultCache}
@@ -11,6 +12,8 @@ import scala.concurrent.duration.Duration
 
 object RangeWorkersStarter {
 
+  var systems = Seq.empty[ActorSystem]
+
   def main(args: Array[String]): Unit = {
 
     type K = String
@@ -18,7 +21,7 @@ object RangeWorkersStarter {
 
     import DefaultComparators._
 
-    val systems = (0 until TestConfig.N_PARTITIONS).map { i =>
+    systems = (0 until TestConfig.N_PARTITIONS).map { i =>
 
       val session = TestHelper.getSession()
       val cache = new DefaultCache(MAX_PARENT_ENTRIES = 80000)
@@ -47,7 +50,7 @@ object RangeWorkersStarter {
       new RangeWorker[K, V](s"${TestConfig.RANGE_INDEX_TOPIC}-$i", i)(rangeBuilder, clusterMetaBuilder).system
     }
 
-    Await.result(Future.sequence(systems.map(_.whenTerminated)), Duration.Inf)
+    //Await.result(Future.sequence(systems.map(_.whenTerminated)), Duration.Inf)
   }
 
 }

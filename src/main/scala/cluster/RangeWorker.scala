@@ -5,7 +5,7 @@ import akka.kafka.scaladsl.{Committer, Consumer, Producer}
 import akka.kafka.{CommitDelivery, CommitterSettings, ConsumerMessage, ConsumerSettings, ProducerSettings, Subscriptions}
 import akka.stream.scaladsl.{Sink, Source}
 import cluster.ClusterCommands.MetaCommand
-import cluster.grpc.{KeyIndexContext, MetaTask, MetaTaskResponse, RangeTask}
+import cluster.grpc.{KeyIndexContext, MetaTask, MetaTaskResponse, RangeTask, RangeTaskResponse}
 import cluster.helpers.{TestConfig, TestHelper}
 import com.google.protobuf.ByteString
 import com.google.protobuf.any.Any
@@ -66,6 +66,18 @@ class RangeWorker[K, V](val id: String, intid: Int)(implicit val rangeBuilder: R
 
     Source(records)
       .runWith(Producer.plainSink(settingsWithProducer)).flatMap(_ => pr.future)
+  }
+
+  def sendResponse(response: RangeTaskResponse): Future[Boolean] = {
+    println(s"sending response of task ${response.id}...")
+
+    val records = Seq(
+      new ProducerRecord[String, Bytes](response.responseTopic,
+        response.id, Any.pack(response).toByteArray)
+    )
+
+    Source(records)
+      .runWith(Producer.plainSink(settingsWithProducer)).map(_ => true)
   }
 
   def handler(msg: ConsumerMessage.CommittableMessage[String, Array[Byte]]): Future[Boolean] = {
@@ -226,8 +238,10 @@ class RangeWorker[K, V](val id: String, intid: Int)(implicit val rangeBuilder: R
         .flatMap(_ => cindex.saveIndexes())
         .flatMap(_ => checkAfterExecution(cindex, (previousMax._1, Some(previousMax._3))))
     }
-
-    ClusterIndex.fromRangeIndexId[K, V](task.rangeId, TestConfig.MAX_RANGE_ITEMS).flatMap(execute)
+    
+    ClusterIndex.fromRangeIndexId[K, V](task.rangeId, TestConfig.MAX_RANGE_ITEMS).flatMap(execute).flatMap { res =>
+      sendResponse(RangeTaskResponse(task.id, TestConfig.CLIENT_TOPIC, res))
+    }
   }
 
     Consumer

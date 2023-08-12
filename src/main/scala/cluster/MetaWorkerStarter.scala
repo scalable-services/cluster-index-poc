@@ -1,5 +1,6 @@
 package cluster
 
+import akka.actor.ActorSystem
 import cluster.grpc.KeyIndexContext
 import cluster.helpers.{TestConfig, TestHelper}
 import services.scalable.index.impl.{CassandraStorage, DefaultCache}
@@ -10,6 +11,8 @@ import scala.concurrent.duration.Duration
 import scala.concurrent.{Await, Future}
 
 object MetaWorkerStarter {
+
+  var systems = Seq.empty[ActorSystem]
 
   def main(args: Array[String]): Unit = {
 
@@ -24,10 +27,10 @@ object MetaWorkerStarter {
       .serializer(Serializers.grpcStringKeyIndexContextSerializer)
       .valueToStringConverter(Printers.keyIndexContextToStringPrinter)
 
-    val systems = Seq(new MetaWorker[String, KeyIndexContext]("meta-worker")(clusterMetaBuilder,
+    systems = Seq(new MetaWorker[String, KeyIndexContext]("meta-worker")(clusterMetaBuilder,
       Serializers.grpcMetaCommandSerializer).system)
 
-    Await.result(Future.sequence(systems.map(_.whenTerminated)), Duration.Inf)
+    //Await.result(Future.sequence(systems.map(_.whenTerminated)), Duration.Inf)
   }
 
 }

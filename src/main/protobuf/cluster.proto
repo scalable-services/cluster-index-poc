@@ -43,6 +43,7 @@ message RangeTask {
     string rangeId = 2;
     repeated bytes commands = 3;
     string lastChangeVersion = 4;
+    string responseTopic = 5;
 }
 
 message MetaTaskResponse {
@@ -53,5 +54,13 @@ message MetaTaskResponse {
     string responseTopic = 3;
     bool ok = 4;
     services.scalable.index.grpc.IndexContext metaCtx = 5;
+}
+
+message RangeTaskResponse {
+    option (scalapb.message).extends = "cluster.grpc.ClusterIndexCommand";
+
+    string id = 1;
+    string responseTopic = 2;
+    bool ok = 3;
 }
 

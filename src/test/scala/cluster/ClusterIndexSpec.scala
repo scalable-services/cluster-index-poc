@@ -172,10 +172,22 @@ class ClusterIndexSpec extends Repeatable with Matchers {
 
     val rangeCommands = Await.result(client.execute(commands), Duration.Inf)
 
+    val listIndex = data.sortBy(_._1)
+    println(s"${Console.YELLOW_B}listindex after range cmds inserted: ${TestHelper.saveListIndex(indexId, listIndex, storage.session, rangeBuilder.ks, rangeBuilder.vs)}${Console.RESET}")
+
     val response = Await.result(client.sendTasks(rangeCommands.values.toSeq), Duration.Inf)
 
-    val listIndex = data.sortBy(_._1)
-    println(s"${Console.YELLOW_B}listindex after range cmds inserted: ${TestHelper.saveListIndex(s"after-$indexId", listIndex, storage.session, rangeBuilder.ks, rangeBuilder.vs)}${Console.RESET}")
+    Thread.sleep(5000)
+
+    val indexDataFromDisk = LoadIndexDemo.loadAll().toList
+    val listDataFromDisk = LoadIndexDemo.loadListIndex(indexId).toList
+
+    assert(indexDataFromDisk == listDataFromDisk)
+
+    println(s"${Console.GREEN_B}  ldata (ref) len: ${indexDataFromDisk.length}: ${indexDataFromDisk}${Console.RESET}\n")
+    println(s"${Console.MAGENTA_B}idata len:       ${listDataFromDisk.length}: ${listDataFromDisk}${Console.RESET}\n")
+
+    println("diff: ", listDataFromDisk.diff(indexDataFromDisk))
 
     println(s"sent tasks: ${response}")
 
