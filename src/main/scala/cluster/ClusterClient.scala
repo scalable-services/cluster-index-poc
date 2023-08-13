@@ -47,11 +47,12 @@ class ClusterClient[K, V](val metaCtx: IndexContext)(implicit val metaBuilder: I
       val removals = cmds.filter(_.isInstanceOf[Commands.Remove[K, V]]).map(_.asInstanceOf[Commands.Remove[K, V]])
         .map { c => c.keys}.flatten.map{ case (k, vs) => k -> (k, vs) }.toMap
 
-      // Remove all keys that are in insert and update (remove is the most precedent operation)
+      // Remove all insertion keys that are in removal set (does not make sense insert what you will remove...)
       var insertionsn = insertions.filterNot { e =>
         removals.isDefinedAt(e._1)
       }
 
+      // Filter out updates that are in removal set...
       var updatesn = updates.filterNot { e =>
         removals.isDefinedAt(e._1)
       }

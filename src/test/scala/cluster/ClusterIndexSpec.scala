@@ -186,6 +186,7 @@ class ClusterIndexSpec extends Repeatable with Matchers {
     val listIndex = data.sortBy(_._1)
     println(s"${Console.YELLOW_B}listindex after range cmds inserted: ${TestHelper.saveListIndex(indexId, listIndex, storage.session, rangeBuilder.ks, rangeBuilder.vs)}${Console.RESET}")
 
+    // WHY DOES IT NOT FAIL? Because all operations hit every range once...
     val response = Await.result(client.sendTasks(rangeCommands.values.toSeq), Duration.Inf)
 
     val indexDataFromDisk = LoadIndexDemo.loadAll().toList

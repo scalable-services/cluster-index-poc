@@ -2,12 +2,11 @@ package cluster
 
 import akka.actor.ActorSystem
 import akka.kafka.scaladsl.{Committer, Consumer, Producer}
-import akka.kafka.{CommitDelivery, CommitterSettings, ConsumerMessage, ConsumerSettings, ProducerSettings, Subscriptions}
+import akka.kafka._
 import akka.stream.scaladsl.{Sink, Source}
 import cluster.ClusterCommands.MetaCommand
-import cluster.grpc.{KeyIndexContext, MetaTask, MetaTaskResponse, RangeTask, RangeTaskResponse}
+import cluster.grpc.{KeyIndexContext, MetaTaskResponse, RangeTask, RangeTaskResponse}
 import cluster.helpers.{TestConfig, TestHelper}
-import com.google.protobuf.ByteString
 import com.google.protobuf.any.Any
 import org.apache.kafka.clients.consumer.ConsumerConfig
 import org.apache.kafka.clients.producer.ProducerRecord
