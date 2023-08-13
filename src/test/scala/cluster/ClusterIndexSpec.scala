@@ -144,7 +144,7 @@ class ClusterIndexSpec extends Repeatable with Matchers {
 
     data = rangeData
 
-    val n = 3
+    val n = 10
 
     commands = Seq.empty[Commands.Command[K, V]]
 

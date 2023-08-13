@@ -22,14 +22,12 @@ object Reset {
 
     val admin = AdminClient.create(config)
 
-    var topics = Seq(TestConfig.META_INDEX_TOPIC)
+    var topics = Seq(TestConfig.META_INDEX_TOPIC, TestConfig.CLIENT_TOPIC)
 
     for (i <- 0 until TestConfig.N_PARTITIONS) {
       topics :+= s"${TestConfig.RANGE_INDEX_TOPIC}-$i"
       topics :+= s"${TestConfig.RESPONSE_TOPIC}-$i"
     }
-
-    topics :+= TestConfig.META_INDEX_TOPIC
 
     val existingTopics = admin.listTopics().names().get().asScala.toSeq
     val deleteTopics = existingTopics.filter{t => topics.exists(_ == t)}

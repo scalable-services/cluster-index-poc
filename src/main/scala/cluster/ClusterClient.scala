@@ -66,8 +66,13 @@ class ClusterClient[K, V](val metaCtx: IndexContext)(implicit val metaBuilder: I
         insertionsn.isDefinedAt(e._1)
       }
 
+      // Remove keys which were in insert operations from removal set
+      val removalsn = removals.filterNot { e =>
+        insertions.isDefinedAt(e._1)
+      }
+
       Seq(
-        Commands.Remove[K, V](indexId, removals.values.toSeq, version),
+        Commands.Remove[K, V](indexId, removalsn.values.toSeq, version),
         Commands.Insert[K, V](indexId, insertionsn.map{ case (k, list) => Tuple3(k, list._1, list._2) }.toSeq, version),
         Commands.Update[K, V](indexId, updatesn.map{ case (k, list) => Tuple3(k, list._1, list._2) }.toSeq, version)
       )
