@@ -1,6 +1,6 @@
 package cluster
 
-import akka.actor.ActorSystem
+import akka.actor.{ActorSystem, Terminated}
 import akka.kafka.{CommitDelivery, CommitterSettings, ConsumerMessage, ConsumerSettings, ProducerSettings, Subscriptions}
 import akka.kafka.scaladsl.{Committer, Consumer, Producer}
 import akka.stream.scaladsl.{Sink, Source}
@@ -277,5 +277,9 @@ class ClusterClient[K, V](val metaCtx: IndexContext)(implicit val metaBuilder: I
     .recover {
       case e: RuntimeException => e.printStackTrace()
     }
+
+  def close(): Future[Terminated] = {
+    system.terminate()
+  }
 
 }

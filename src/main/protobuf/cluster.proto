@@ -44,6 +44,7 @@ message RangeTask {
     repeated bytes commands = 3;
     string lastChangeVersion = 4;
     string responseTopic = 5;
+    string indexId = 6;
 }
 
 message MetaTaskResponse {

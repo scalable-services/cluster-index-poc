@@ -12,6 +12,7 @@ import org.apache.kafka.clients.consumer.ConsumerConfig
 import org.apache.kafka.clients.producer.ProducerRecord
 import org.apache.kafka.common.serialization.{ByteArrayDeserializer, ByteArraySerializer, StringDeserializer, StringSerializer}
 import org.slf4j.LoggerFactory
+import services.scalable.index.grpc.IndexContext
 import services.scalable.index.{Bytes, Commands, IndexBuilder}
 
 import java.util.UUID
@@ -162,7 +163,48 @@ class RangeWorker[K, V](val id: String, intid: Int)(implicit val rangeBuilder: R
     def execute(cindex: ClusterIndex[K, V]): Future[Boolean] = {
         val previousMax = cindex.ranges(task.rangeId).max
 
-      def checkVersions(): Boolean = {
+      val dataBefore = cindex.inOrder()
+      var data = cindex.inOrder()
+
+      commands.foreach {
+        case cmd: Commands.Insert[K, V] =>
+
+          val list = cmd.list
+
+          if (cmd.version.get != TestConfig.TX_VERSION) {
+            println()
+          }
+
+          data = data ++ list.map { case (k, v, _) => Tuple3(k, v, cmd.version.get) }
+
+        case cmd: Commands.Update[K, V] =>
+
+          val list = cmd.list
+
+          if (cmd.version.get != TestConfig.TX_VERSION || !list.forall(x => x._3.isDefined && x._3.get == TestConfig.TX_VERSION)) {
+            println()
+          }
+
+          data = data.filterNot { case (k, _, _) => list.exists { case (k1, _, _) => rangeBuilder.ordering.equiv(k, k1) } }
+          data = data ++ list.map { case (k, v, lv) => (k, v, lv.get) }
+
+        case cmd: Commands.Remove[K, V] =>
+
+          val keys = cmd.keys.map(_._1)
+
+          if (cmd.version.get != TestConfig.TX_VERSION || !cmd.keys.forall(x => x._2.isDefined && x._2.get == TestConfig.TX_VERSION)) {
+            println()
+          }
+
+          data = data.filterNot { case (k, _, _) => keys.exists {
+            rangeBuilder.ordering.equiv(k, _)
+          }
+          }
+
+        case _ =>
+      }
+
+      def checkVersions(): Future[Boolean] = {
         val idx = cindex.ranges.head._2
         val indexVersion = idx.meta.lastChangeVersion
         val hasChanged = task.lastChangeVersion.compareTo(indexVersion) != 0
@@ -170,72 +212,44 @@ class RangeWorker[K, V](val id: String, intid: Int)(implicit val rangeBuilder: R
         // assert(!hasChanged, s"Index structure has changed! task version: ${task.lastChangeVersion} index version: ${indexVersion}")
 
         // It does not change when running a simulation with only one transaction because each range is only accessed once...
-        if (hasChanged) {
-          println(s"\n\n${Console.RED_B}Index structure has changed! task version: ${task.lastChangeVersion} index version: ${indexVersion}${Console.RESET}\n\n")
-          System.exit(1)
+        if (!hasChanged) {
+          return cindex.execute(commands, version).map { br =>
+
+            if (br.error.isDefined) {
+              println(br.error.get)
+              throw br.error.get
+            }
+
+            assert(br.success)
+
+            val dataAfter = cindex.inOrder().map { case (k, v, _) => k -> v }.toList
+            val dataSorted = data.sortBy(_._1).map { case (k, v, _) => k -> v }.toList
+
+            assert(dataAfter == dataSorted)
+
+            br.success
+          }
+            .flatMap(_ => cindex.saveIndexes())
+            .flatMap(_ => checkAfterExecution(cindex, (previousMax._1, Some(previousMax._3))))
         }
 
-        true
+        println(s"\n\n${Console.RED_B} RANGE HAS CHANGED... REDIRECTING OPERATIONS...${Console.RESET}\n\n")
+
+        // Instantiate a new client and wait for the response
+
+        // Get the fresh meta cluster info...
+        val metaContext = Await.result(TestHelper.loadIndex(task.indexId), Duration.Inf).get
+
+        val client = new ClusterClient[K, V](metaContext)(clusterIndexBuilder, session, rangeBuilder.rangeCommandSerializer)
+
+        client.execute(commands).flatMap { rangeCommands =>
+          client.sendTasks(rangeCommands.values.toSeq)
+        }.flatMap { res =>
+          client.close().map(_ => res)
+        }
       }
 
       checkVersions()
-
-        val dataBefore = cindex.inOrder()
-        var data = cindex.inOrder()
-
-       commands.foreach {
-         case cmd: Commands.Insert[K, V] =>
-
-           val list = cmd.list
-
-           if(cmd.version.get != TestConfig.TX_VERSION){
-             println()
-           }
-
-           data = data ++ list.map { case (k, v, _) => Tuple3(k, v, cmd.version.get) }
-
-         case cmd: Commands.Update[K, V] =>
-
-           val list = cmd.list
-
-           if (cmd.version.get != TestConfig.TX_VERSION || !list.forall(x => x._3.isDefined && x._3.get == TestConfig.TX_VERSION)) {
-             println()
-           }
-
-           data = data.filterNot { case (k, _, _) => list.exists { case (k1, _, _) => rangeBuilder.ordering.equiv(k, k1) } }
-           data = data ++ list.map { case (k, v, lv) => (k, v, lv.get) }
-
-         case cmd: Commands.Remove[K, V] =>
-
-            val keys = cmd.keys.map(_._1)
-
-           if (cmd.version.get != TestConfig.TX_VERSION || !cmd.keys.forall(x =>  x._2.isDefined && x._2.get == TestConfig.TX_VERSION)) {
-             println()
-           }
-
-            data = data.filterNot{case (k, _, _) => keys.exists{rangeBuilder.ordering.equiv(k, _)}}
-
-         case _ =>
-       }
-
-        cindex.execute(commands, version).map { br =>
-
-          if (br.error.isDefined) {
-            println(br.error.get)
-            throw br.error.get
-          }
-
-          assert(br.success)
-
-          val dataAfter = cindex.inOrder().map{case (k, v, _) => k -> v}.toList
-          val dataSorted = data.sortBy(_._1).map{case (k, v, _) => k -> v}.toList
-
-          assert(dataAfter == dataSorted)
-
-          br.success
-        }
-        .flatMap(_ => cindex.saveIndexes())
-        .flatMap(_ => checkAfterExecution(cindex, (previousMax._1, Some(previousMax._3))))
     }
 
     ClusterIndex.fromRangeIndexId[K, V](task.rangeId, TestConfig.MAX_RANGE_ITEMS).flatMap(execute).flatMap { res =>

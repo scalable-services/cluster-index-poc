@@ -201,7 +201,7 @@ class ClusterIndexSpec extends Repeatable with Matchers {
 
     println(s"sent tasks: ${response}")
 
-    Await.result(storage.close().flatMap(_ => client.system.terminate()), Duration.Inf)
+    Await.result(client.close().flatMap(_ => storage.close()), Duration.Inf)
     session.close()
   }
 
