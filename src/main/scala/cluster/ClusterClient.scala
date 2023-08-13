@@ -37,7 +37,45 @@ class ClusterClient[K, V](val metaCtx: IndexContext)(implicit val metaBuilder: I
 
   val rangeTasks = TrieMap.empty[String, Promise[Boolean]]
 
+   def normalize(commands: Seq[Commands.Command[K, V]], version: Option[String]): Seq[Commands.Command[K, V]] = {
+    commands.groupBy(_.indexId).map { case (indexId, cmds) =>
+
+      val insertions = cmds.filter(_.isInstanceOf[Commands.Insert[K, V]]).map(_.asInstanceOf[Commands.Insert[K, V]])
+        .map { c => c.list}.flatten.map{ case (k, v, vs) => k -> (v, vs)}.toMap
+      val updates = cmds.filter(_.isInstanceOf[Commands.Update[K, V]]).map(_.asInstanceOf[Commands.Update[K, V]])
+        .map { c => c.list}.flatten.map{ case (k, v, vs) => k -> (v, vs) }.toMap
+      val removals = cmds.filter(_.isInstanceOf[Commands.Remove[K, V]]).map(_.asInstanceOf[Commands.Remove[K, V]])
+        .map { c => c.keys}.flatten.map{ case (k, vs) => k -> (k, vs) }.toMap
+
+      // Remove all keys that are in insert and update (remove is the most precedent operation)
+      var insertionsn = insertions.filterNot { e =>
+        removals.isDefinedAt(e._1)
+      }
+
+      var updatesn = updates.filterNot { e =>
+        removals.isDefinedAt(e._1)
+      }
+
+      // Update all insertion operations that are in update set...
+      insertionsn = insertionsn.filter { e => updatesn.isDefinedAt(e._1)}.map { e =>
+        e._1 -> (updatesn(e._1)._1, e._2._2)
+      } ++ insertionsn.filterNot{ e => updatesn.isDefinedAt(e._1) }
+
+      // Remove update operations that were in insertions (updates on inserting keys are actually insertions...)
+      updatesn = updatesn.filterNot { e =>
+        insertionsn.isDefinedAt(e._1)
+      }
+
+      Seq(
+        Commands.Remove[K, V](indexId, removals.values.toSeq, version),
+        Commands.Insert[K, V](indexId, insertionsn.map{ case (k, list) => Tuple3(k, list._1, list._2) }.toSeq, version),
+        Commands.Update[K, V](indexId, updatesn.map{ case (k, list) => Tuple3(k, list._1, list._2) }.toSeq, version)
+      )
+    }.flatten.toSeq
+  }
+
   def sendTasks(tasks: Seq[RangeCommand[K, V]]): Future[Boolean] = {
+
     val records = tasks.map { rc =>
       val id = MurmurHash3.stringHash(rc.rangeId).abs % TestConfig.N_PARTITIONS
       new ProducerRecord[String, Bytes](s"${TestConfig.RANGE_INDEX_TOPIC}-${id}", rc.id,

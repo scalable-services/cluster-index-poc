@@ -143,11 +143,24 @@ class ClusterIndexSpec extends Repeatable with Matchers {
     assert(rangeData.map{case (k, v, _) => k -> v} == dataSorted.map{case (k, v, _) => k -> v})
 
     data = rangeData
-    val updateCommands = update()
+
+    val n = 3
+
+    commands = Seq.empty[Commands.Command[K, V]]
+
+    for(i<-0 until n){
+      commands = commands ++ (rand.nextInt(1, 4) match {
+        case 1 => insert()
+        case 2 => update()
+        case 3 => remove()
+      })
+    }
+
+    /*val updateCommands = update()
     val removalCommands = remove()
     val insertCommands = insert()
 
-    commands = updateCommands ++ removalCommands ++ insertCommands
+    commands = updateCommands ++ removalCommands ++ insertCommands*/
 
     /*val metaContext2 = Await.result(TestHelper.loadIndex(metaContext.id), Duration.Inf).get
     val cindex2 = new ClusterIndex[K, V](metaContext2, TestConfig.MAX_RANGE_ITEMS)(rangeBuilder, clusterMetaBuilder)
@@ -163,6 +176,7 @@ class ClusterIndexSpec extends Repeatable with Matchers {
     assert(rangeData.map{case (k, v, _) => k -> v} == dataSorted.map{case (k, v, _) => k -> v})*/
 
     val client = new ClusterClient[K, V](ctx)(clusterMetaBuilder, session, Serializers.grpcRangeCommandSerializer)
+    commands = client.normalize(commands, Some(version))
 
     assert(commands.forall(x => x.version.isDefined && x.version.get == TestConfig.TX_VERSION))
     assert(data.forall(x => x._3 == TestConfig.TX_VERSION))

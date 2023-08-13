@@ -209,8 +209,12 @@ class ClusterIndex[K, V](val metaContext: IndexContext, val maxNItems: Int)(impl
     insert().map { n =>
       InsertionResult(true, n)
     }.recover {
-      case t: IndexError => InsertionResult(false, 0, Some(t))
-      case t: Throwable => throw t
+      case t: IndexError =>
+        t.printStackTrace()
+        InsertionResult(false, 0, Some(t))
+      case t: Throwable =>
+        t.printStackTrace()
+        throw t
     }
   }
 
@@ -261,8 +265,12 @@ class ClusterIndex[K, V](val metaContext: IndexContext, val maxNItems: Int)(impl
     update().map { n =>
       UpdateResult(true, n)
     }.recover {
-      case t: IndexError => UpdateResult(false, 0, Some(t))
-      case t: Throwable => throw t
+      case t: IndexError =>
+        t.printStackTrace()
+        UpdateResult(false, 0, Some(t))
+      case t: Throwable =>
+        t.printStackTrace()
+        throw t
     }
   }
 
@@ -318,8 +326,12 @@ class ClusterIndex[K, V](val metaContext: IndexContext, val maxNItems: Int)(impl
     remove().map { n =>
       RemovalResult(true, n)
     }.recover {
-      case t: IndexError => RemovalResult(false, 0, Some(t))
-      case t: Throwable => throw t
+      case t: IndexError =>
+        t.printStackTrace()
+        RemovalResult(false, 0, Some(t))
+      case t: Throwable =>
+        t.printStackTrace()
+        throw t
     }
   }
 

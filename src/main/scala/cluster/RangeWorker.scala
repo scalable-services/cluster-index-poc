@@ -238,7 +238,7 @@ class RangeWorker[K, V](val id: String, intid: Int)(implicit val rangeBuilder: R
         .flatMap(_ => cindex.saveIndexes())
         .flatMap(_ => checkAfterExecution(cindex, (previousMax._1, Some(previousMax._3))))
     }
-    
+
     ClusterIndex.fromRangeIndexId[K, V](task.rangeId, TestConfig.MAX_RANGE_ITEMS).flatMap(execute).flatMap { res =>
       sendResponse(RangeTaskResponse(task.id, TestConfig.CLIENT_TOPIC, res))
     }
@@ -276,7 +276,7 @@ class RangeWorker[K, V](val id: String, intid: Int)(implicit val rangeBuilder: R
     }
     .via(Committer.flow(committerSettings.withMaxBatch(1)))
     .runWith(Sink.ignore)
-    .recover {
+    /*.recover {
       case e: RuntimeException => e.printStackTrace()
-    }
+    }*/
 }
