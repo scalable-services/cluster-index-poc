@@ -67,7 +67,7 @@ class MetaWorker[K, V](val id: String)(implicit val indexBuilder: IndexBuilder[K
       val beforeCommands = Await.result(TestHelper.all(meta.inOrder()), Duration.Inf).map{ x => indexBuilder.ks(x._1) -> x._2.lastChangeVersion}
       println(s"${Console.YELLOW_B}meta before : ${beforeCommands}...${Console.RESET}")
 
-      meta.execute(cmdTask.commands).flatMap { result =>
+      meta.execute(cmdTask.commands, TestConfig.TX_VERSION).flatMap { result =>
         if(result.error.isDefined) {
           println(result.error.get)
           throw result.error.get

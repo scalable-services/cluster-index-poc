@@ -183,6 +183,8 @@ class RangeWorker[K, V](val id: String, intid: Int)(implicit val rangeBuilder: R
       val rangeVersion = rangeMeta.lastChangeVersion
       val hasChanged = task.lastChangeVersion.compareTo(rangeVersion) != 0
 
+      assert(!rangeMeta.data.isEmpty || hasChanged)
+
       println(s"${Console.YELLOW_B}CHECKING VERSION FOR ${task.rangeId}... last version: ${task.lastChangeVersion} meta version: ${rangeMeta.lastChangeVersion} IS EMPTY: ${rangeMeta.data.isEmpty} ${Console.RESET}")
 
       if (hasChanged) {

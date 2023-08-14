@@ -151,7 +151,7 @@ class ClusterIndex[K, V](val metaContext: IndexContext, val maxNItems: Int)(impl
     //ranges.put(lindex.meta.id, lindex)
 
     val ir = lindex.insert(slice, version)
-    assert(ir.success)
+    assert(ir.success, ir.error.get)
 
     val lm = lindex.max._1
 

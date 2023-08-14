@@ -84,6 +84,9 @@ class ClusterClient[K, V](val metaCtx: IndexContext)(implicit val metaBuilder: I
 
   def sendTasks(tasks: Seq[RangeCommand[K, V]]): Future[Seq[(RangeCommand[K, V], Boolean)]] = {
     val records = tasks.map { rc =>
+
+      rc.responseTopic = client_uuid
+
       val id = MurmurHash3.stringHash(rc.rangeId).abs % TestConfig.N_PARTITIONS
       new ProducerRecord[String, Bytes](s"${TestConfig.RANGE_INDEX_TOPIC}-${id}", rc.id,
         rangeCommandSerializer.serialize(rc))
@@ -102,9 +105,10 @@ class ClusterClient[K, V](val metaCtx: IndexContext)(implicit val metaBuilder: I
         case results if results.forall(_._2 == true) => Future.successful(true)
         case results =>
 
-          println(s"${Console.YELLOW_B} TRYING COMMANDS AGAIN... ${Console.RESET}")
-
+          val succeed = results.filter(_._2).map(_._1)
           val notSucceed = results.filterNot(_._2).map(_._1)
+
+          println(s"${Console.YELLOW_B} TRYING COMMANDS AGAIN... SUCCEED: ${succeed.length} not succeed: ${notSucceed.length} ${Console.RESET}")
 
           TestHelper.loadIndex(metaCtx.id).map(_.get).flatMap { freshCtx =>
             val client = new ClusterClient[K, V](freshCtx)
@@ -278,6 +282,8 @@ class ClusterClient[K, V](val metaCtx: IndexContext)(implicit val metaBuilder: I
 
   def handler(msg: ConsumerMessage.CommittableMessage[String, Array[Byte]]): Future[Boolean] = {
     val r = Any.parseFrom(msg.record.value()).unpack(RangeTaskResponse)
+
+    println(s"client ${clientId} receiving ${r.id} ok: ${r.ok}")
 
     rangeTasks.remove(r.id).map(_._2.success(r.ok))
 
