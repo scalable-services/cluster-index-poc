@@ -22,7 +22,7 @@ object Reset {
 
     val admin = AdminClient.create(config)
 
-    var topics = Seq(TestConfig.META_INDEX_TOPIC, TestConfig.CLIENT_TOPIC)
+    var topics = Seq(TestConfig.META_INDEX_TOPIC)
 
     for (i <- 0 until TestConfig.N_PARTITIONS) {
       topics :+= s"${TestConfig.RANGE_INDEX_TOPIC}-$i"

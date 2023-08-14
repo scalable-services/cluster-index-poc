@@ -14,5 +14,5 @@ object TestConfig {
 
   val TX_VERSION = "v1"
 
-  val CLIENT_TOPIC = "client"
+  //val CLIENT_TOPIC = "client"
 }

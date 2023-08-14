@@ -1,5 +1,6 @@
 package cluster
 
+import cluster.ClusterCommands.RangeCommand
 import cluster.grpc.KeyIndexContext
 import cluster.helpers.{TestConfig, TestHelper}
 import org.apache.commons.lang3.RandomStringUtils
@@ -181,25 +182,48 @@ class ClusterIndexSpec extends Repeatable with Matchers {
     assert(commands.forall(x => x.version.isDefined && x.version.get == TestConfig.TX_VERSION))
     assert(data.forall(x => x._3 == TestConfig.TX_VERSION))
 
-    val rangeCommands = Await.result(client.execute(commands), Duration.Inf)
-
     val listIndex = data.sortBy(_._1)
     println(s"${Console.YELLOW_B}listindex after range cmds inserted: ${TestHelper.saveListIndex(indexId, listIndex, storage.session, rangeBuilder.ks, rangeBuilder.vs)}${Console.RESET}")
 
-    // WHY DOES IT NOT FAIL? Because all operations hit every range once...
-    val response = Await.result(client.sendTasks(rangeCommands.values.toSeq), Duration.Inf)
+    var response = Await.result(client.execute(commands).flatMap { cmds =>
+      client.sendTasks(cmds.values.toSeq)
+    }, Duration.Inf)
 
-    val indexDataFromDisk = LoadIndexDemo.loadAll().toList
-    val listDataFromDisk = LoadIndexDemo.loadListIndex(indexId).toList
+    def compare(): Unit = {
+      val indexDataFromDisk = LoadIndexDemo.loadAll().toList
+      val listDataFromDisk = LoadIndexDemo.loadListIndex(indexId).toList
 
-    assert(indexDataFromDisk == listDataFromDisk)
+      assert(indexDataFromDisk == listDataFromDisk)
 
-    println(s"${Console.GREEN_B}  ldata (ref) len: ${indexDataFromDisk.length}: ${indexDataFromDisk}${Console.RESET}\n")
-    println(s"${Console.MAGENTA_B}idata len:       ${listDataFromDisk.length}: ${listDataFromDisk}${Console.RESET}\n")
+      println(s"${Console.GREEN_B}  ldata (ref) len: ${indexDataFromDisk.length}: ${indexDataFromDisk}${Console.RESET}\n")
+      println(s"${Console.MAGENTA_B}idata len:       ${listDataFromDisk.length}: ${listDataFromDisk}${Console.RESET}\n")
 
-    println("diff: ", listDataFromDisk.diff(indexDataFromDisk))
+      println("diff: ", listDataFromDisk.diff(indexDataFromDisk))
+    }
 
-    println(s"sent tasks: ${response}")
+    println(s"sent tasks 1: ${response}")
+
+    compare()
+
+    val ctx2 = Await.result(TestHelper.loadIndex(ctx.id), Duration.Inf).get
+    val client2 = new ClusterClient[K, V](ctx2)(clusterMetaBuilder, session, Serializers.grpcRangeCommandSerializer)
+
+    commands = insert()
+
+    val listIndex2 = data.sortBy(_._1)
+    println(s"${Console.YELLOW_B}listindex2 after range cmds inserted: ${TestHelper.saveListIndex(indexId, listIndex2, storage.session, rangeBuilder.ks, rangeBuilder.vs)}${Console.RESET}")
+
+    response = Await.result(client2.execute(commands).flatMap { cmds =>
+      client2.sendTasks(cmds.values.toSeq)
+    }, Duration.Inf)
+
+    val all = response.forall(_._2 == true)
+
+    assert(all)
+
+    compare()
+
+    println()
 
     Await.result(client.close().flatMap(_ => storage.close()), Duration.Inf)
     session.close()

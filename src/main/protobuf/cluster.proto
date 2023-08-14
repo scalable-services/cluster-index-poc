@@ -42,9 +42,10 @@ message RangeTask {
     string id = 1;
     string rangeId = 2;
     repeated bytes commands = 3;
-    string lastChangeVersion = 4;
-    string responseTopic = 5;
-    string indexId = 6;
+    services.scalable.index.grpc.KVPair keyInMeta = 4 [(scalapb.field).no_box = true];
+    string lastChangeVersion = 5;
+    string responseTopic = 6;
+    string indexId = 7;
 }
 
 message MetaTaskResponse {

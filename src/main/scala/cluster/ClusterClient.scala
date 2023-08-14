@@ -26,6 +26,8 @@ class ClusterClient[K, V](val metaCtx: IndexContext)(implicit val metaBuilder: I
                                                      val rangeCommandSerializer: GrpcRangeCommandSerializer[K, V]){
   import metaBuilder._
 
+  val client_uuid = UUID.randomUUID.toString
+
   val system = ActorSystem.create()
   implicit val provider = system.classicSystem
 
@@ -35,7 +37,7 @@ class ClusterClient[K, V](val metaCtx: IndexContext)(implicit val metaBuilder: I
   val kafkaProducer = producerSettings.createKafkaProducer()
   val settingsWithProducer = producerSettings.withProducer(kafkaProducer)
 
-  val rangeTasks = TrieMap.empty[String, Promise[Boolean]]
+  val rangeTasks = TrieMap.empty[String, (RangeCommand[K, V], Promise[Boolean])]
 
    def normalize(commands: Seq[Commands.Command[K, V]], version: Option[String]): Seq[Commands.Command[K, V]] = {
     commands.groupBy(_.indexId).map { case (indexId, cmds) =>
@@ -80,8 +82,7 @@ class ClusterClient[K, V](val metaCtx: IndexContext)(implicit val metaBuilder: I
     }.flatten.toSeq
   }
 
-  def sendTasks(tasks: Seq[RangeCommand[K, V]]): Future[Boolean] = {
-
+  def sendTasks(tasks: Seq[RangeCommand[K, V]]): Future[Seq[(RangeCommand[K, V], Boolean)]] = {
     val records = tasks.map { rc =>
       val id = MurmurHash3.stringHash(rc.rangeId).abs % TestConfig.N_PARTITIONS
       new ProducerRecord[String, Bytes](s"${TestConfig.RANGE_INDEX_TOPIC}-${id}", rc.id,
@@ -90,27 +91,43 @@ class ClusterClient[K, V](val metaCtx: IndexContext)(implicit val metaBuilder: I
 
     val futures = tasks.map { t =>
       val promise = Promise[Boolean]()
-      rangeTasks.put(t.id, promise)
-      promise.future
+      rangeTasks.put(t.id, t -> promise)
+      promise.future.map{t -> _}
     }
 
     Source(records)
       .runWith(Producer.plainSink(settingsWithProducer))
-      .flatMap(_ => Future.sequence(futures).map(_.forall(_ == true)))
+      .flatMap(_ => Future.sequence(futures))
+      /*.flatMap {
+        case results if results.forall(_._2 == true) => Future.successful(true)
+        case results =>
+
+          println(s"${Console.YELLOW_B} TRYING COMMANDS AGAIN... ${Console.RESET}")
+
+          val notSucceed = results.filterNot(_._2).map(_._1)
+
+          TestHelper.loadIndex(metaCtx.id).map(_.get).flatMap { freshCtx =>
+            val client = new ClusterClient[K, V](freshCtx)
+
+            client.execute(notSucceed.map(_.commands).flatten).flatMap { rangeCmds =>
+              client.sendTasks(rangeCmds.values.toSeq)
+            }.flatMap(res => client.close().map(_ => res))
+          }
+      }*/
   }
 
   val meta = new QueryableIndex[K, KeyIndexContext](metaCtx)(metaBuilder)
 
-  def findRange(k: K): Future[Option[(K, RangeIndexMeta, String)]] = {
+  def findRange(k: K): Future[Option[(K, KeyIndexContext, String)]] = {
     meta.findPath(k).map {
       case None => None
       case Some(leaf) => Some(leaf.findPath(k)._2).map { x =>
-        (x._1, Await.result(TestHelper.getRange(x._2.rangeId), Duration.Inf).get, x._3)
+        (x._1, x._2, x._3)
       }
     }
   }
 
-  def sliceInsertion(c: Commands.Insert[K, V])(ranges: TrieMap[String, (String, Seq[Commands.Command[K, V]])]): Future[Int] = {
+  def sliceInsertion(c: Commands.Insert[K, V])(ranges: TrieMap[String, (Tuple3[K, String, String], Seq[Commands.Command[K, V]])]): Future[Int] = {
     val sorted = c.list.sortBy(_._1)
 
     val len = sorted.length
@@ -128,7 +145,7 @@ class ClusterClient[K, V](val metaCtx: IndexContext)(implicit val metaBuilder: I
         case None =>
           //println("none")
           list.length
-        case Some((last, dbCtx, _)) =>
+        case Some((last, rctx, vs)) =>
 
           val idx = list.indexWhere { case (k, _, _) => ord.gt(k, last) }
           if (idx > 0) list = list.slice(0, idx)
@@ -137,9 +154,9 @@ class ClusterClient[K, V](val metaCtx: IndexContext)(implicit val metaBuilder: I
 
           val cmd = Commands.Insert[K, V](c.indexId, list, c.version)
 
-          ranges.get(dbCtx.id) match {
-            case None => ranges.put(dbCtx.id, dbCtx.lastChangeVersion -> Seq(cmd))
-            case Some((lastCV, cmdList)) => ranges.update(dbCtx.id, lastCV -> (cmdList :+ cmd))
+          ranges.get(rctx.rangeId) match {
+            case None => ranges.put(rctx.rangeId, Tuple3(last, vs, rctx.lastChangeVersion) -> Seq(cmd))
+            case Some((lastCV, cmdList)) => ranges.update(rctx.rangeId, lastCV -> (cmdList :+ cmd))
           }
 
           list.length
@@ -154,7 +171,7 @@ class ClusterClient[K, V](val metaCtx: IndexContext)(implicit val metaBuilder: I
     insert(0)
   }
 
-  def sliceRemoval(c: Commands.Remove[K, V])(ranges: TrieMap[String, (String, Seq[Commands.Command[K, V]])]): Future[Int] = {
+  def sliceRemoval(c: Commands.Remove[K, V])(ranges: TrieMap[String, (Tuple3[K, String, String], Seq[Commands.Command[K, V]])]): Future[Int] = {
     val sorted = c.keys.sorted
 
     val len = sorted.length
@@ -170,16 +187,16 @@ class ClusterClient[K, V](val metaCtx: IndexContext)(implicit val metaBuilder: I
 
       findRange(k).map {
         case None => list.length
-        case Some((last, leafId, version)) =>
+        case Some((last, rctx, vs)) =>
 
           val idx = list.indexWhere { case (k, vs) => ord.gt(k, last) }
           if (idx > 0) list = list.slice(0, idx)
 
           val cmd = Commands.Remove[K, V](c.indexId, list, c.version)
 
-          ranges.get(leafId.id) match {
-            case None => ranges.put(leafId.id, leafId.lastChangeVersion -> Seq(cmd))
-            case Some((lastCV, cmdList)) => ranges.update(leafId.id, lastCV -> (cmdList :+ cmd))
+          ranges.get(rctx.rangeId) match {
+            case None => ranges.put(rctx.rangeId, Tuple3(last, vs, rctx.lastChangeVersion) -> Seq(cmd))
+            case Some((lastCV, cmdList)) => ranges.update(rctx.rangeId, lastCV -> (cmdList :+ cmd))
           }
 
           list.length
@@ -192,7 +209,7 @@ class ClusterClient[K, V](val metaCtx: IndexContext)(implicit val metaBuilder: I
     remove()
   }
 
-  def sliceUpdate(c: Commands.Update[K, V])(ranges: TrieMap[String, (String, Seq[Commands.Command[K, V]])]): Future[Int] = {
+  def sliceUpdate(c: Commands.Update[K, V])(ranges: TrieMap[String, (Tuple3[K, String, String], Seq[Commands.Command[K, V]])]): Future[Int] = {
     val sorted = c.list.sortBy(_._1)
 
     val len = sorted.length
@@ -210,16 +227,16 @@ class ClusterClient[K, V](val metaCtx: IndexContext)(implicit val metaBuilder: I
         case None =>
           println("none")
           list.length
-        case Some((last, leafId, version)) =>
+        case Some((last, rctx, vs)) =>
 
           val idx = list.indexWhere { case (k, _, _) => ord.gt(k, last) }
           if (idx > 0) list = list.slice(0, idx)
 
           val cmd = Commands.Update[K, V](c.indexId, list, c.version)
 
-          ranges.get(leafId.id) match {
-            case None => ranges.put(leafId.id, leafId.lastChangeVersion -> Seq(cmd))
-            case Some((lastCV, cmdList)) => ranges.update(leafId.id, lastCV -> (cmdList :+ cmd))
+          ranges.get(rctx.rangeId) match {
+            case None => ranges.put(rctx.rangeId, Tuple3(last, vs, rctx.lastChangeVersion) -> Seq(cmd))
+            case Some((lastCV, cmdList)) => ranges.update(rctx.rangeId, lastCV -> (cmdList :+ cmd))
           }
 
           list.length
@@ -233,7 +250,7 @@ class ClusterClient[K, V](val metaCtx: IndexContext)(implicit val metaBuilder: I
   }
 
   def execute(commands: Seq[Commands.Command[K, V]]): Future[TrieMap[String, RangeCommand[K, V]]] = {
-    val ranges = TrieMap.empty[String, (String, Seq[Commands.Command[K, V]])]
+    val ranges = TrieMap.empty[String, (Tuple3[K, String, String], Seq[Commands.Command[K, V]])]
 
     commands.foreach {
       case c: Commands.Insert[K, V] => Await.result(sliceInsertion(c)(ranges), Duration.Inf)
@@ -241,8 +258,8 @@ class ClusterClient[K, V](val metaCtx: IndexContext)(implicit val metaBuilder: I
       case c: Commands.Remove[K, V] => Await.result(sliceRemoval(c)(ranges), Duration.Inf)
     }
 
-    Future.successful(ranges.map{case (rangeId, (lastVersion, list)) => rangeId ->
-      RangeCommand(UUID.randomUUID.toString, rangeId, list, lastVersion)})
+    Future.successful(ranges.map{case (rangeId, (keyCtx, list)) => rangeId ->
+      RangeCommand(UUID.randomUUID.toString, rangeId, metaCtx.id, list, keyCtx._1 -> keyCtx._2, keyCtx._3, client_uuid)})
   }
 
   val clientId = UUID.randomUUID.toString
@@ -262,13 +279,13 @@ class ClusterClient[K, V](val metaCtx: IndexContext)(implicit val metaBuilder: I
   def handler(msg: ConsumerMessage.CommittableMessage[String, Array[Byte]]): Future[Boolean] = {
     val r = Any.parseFrom(msg.record.value()).unpack(RangeTaskResponse)
 
-    rangeTasks.remove(r.id).map(_.success(r.ok))
+    rangeTasks.remove(r.id).map(_._2.success(r.ok))
 
     Future.successful(true)
   }
 
   Consumer
-    .committableSource(consumerSettings, Subscriptions.topics(TestConfig.CLIENT_TOPIC))
+    .committableSource(consumerSettings, Subscriptions.topics(client_uuid))
     .mapAsync(1) { msg =>
       handler(msg).map(_ => msg.committableOffset)
     }

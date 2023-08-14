@@ -93,10 +93,15 @@ class RangeIndex[K, V](var meta: RangeIndexMeta)(implicit val builder: RangeBuil
       if(!r.success) return BatchResult(false, r.error)
     }
 
-    // Change last version if max has changed...
-    val maxNow: Option[K] = if(isEmpty()) None else Some(max._1)
+    if(isEmpty()) {
+      meta = meta.withLastChangeVersion(UUID.randomUUID.toString)
+      return BatchResult(true)
+    }
 
-    if(maxBefore != maxNow){
+    // Change last version if max has changed...
+    val maxNow: Option[K] = Some(max._1)
+
+    if(maxBefore.isEmpty || !builder.ordering.equiv(maxBefore.get, maxNow.get)){
       println(s"${Console.YELLOW_B}changed version for range ${meta.id}...${Console.RESET}")
       meta = meta.withLastChangeVersion(UUID.randomUUID.toString)
     }
@@ -139,7 +144,7 @@ class RangeIndex[K, V](var meta: RangeIndexMeta)(implicit val builder: RangeBuil
   def copy(sameId: Boolean = false): RangeIndex[K, V] = {
     val rcrange = RangeIndexMeta()
       .withId(if(sameId) meta.id else UUID.randomUUID.toString)
-      .withLastChangeVersion(UUID.randomUUID.toString)
+      .withLastChangeVersion(if(sameId) meta.lastChangeVersion else UUID.randomUUID.toString)
       .withOrder(meta.order)
       .withMIN(meta.mIN)
       .withMAX(meta.mAX)

@@ -64,7 +64,7 @@ class MetaWorker[K, V](val id: String)(implicit val indexBuilder: IndexBuilder[K
     storage.loadIndex(cmdTask.metaId).map(_.get).flatMap { ctx =>
       val meta = new QueryableIndex[K, KeyIndexContext](ctx)(indexBuilder)
 
-      val beforeCommands = Await.result(TestHelper.all(meta.inOrder()), Duration.Inf)
+      val beforeCommands = Await.result(TestHelper.all(meta.inOrder()), Duration.Inf).map{ x => indexBuilder.ks(x._1) -> x._2.lastChangeVersion}
       println(s"${Console.YELLOW_B}meta before : ${beforeCommands}...${Console.RESET}")
 
       meta.execute(cmdTask.commands).flatMap { result =>
@@ -73,8 +73,8 @@ class MetaWorker[K, V](val id: String)(implicit val indexBuilder: IndexBuilder[K
           throw result.error.get
         }
 
-        val afterCommands = Await.result(TestHelper.all(meta.inOrder()), Duration.Inf)
-        println(s"${Console.GREEN_B}result after commands: ${afterCommands}...${Console.RESET}")
+        val afterCommands = Await.result(TestHelper.all(meta.inOrder()), Duration.Inf).map{ x => indexBuilder.ks(x._1) -> x._2.lastChangeVersion}
+        println(s"${Console.GREEN_B}meta after: ${afterCommands}...${Console.RESET}")
 
         meta.save().flatMap(ctx => sendResponse(MetaTaskResponse(
           task.id,
