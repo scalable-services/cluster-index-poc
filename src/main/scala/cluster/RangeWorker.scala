@@ -120,7 +120,7 @@ class RangeWorker[K, V](val id: String, intid: Int)(implicit val rangeBuilder: R
           RESPONSE_TOPIC
         )
 
-        println(s"${Console.RED_B}SENDING REMOVING TASK ${task.id} TO META FOR RANGE ID ${task.rangeId}... ${Console.RESET}")
+        println(s"${Console.RED_B}SENDING REMOVING TASK ${task.id} TO META FOR RANGE ID ${task.rangeId} REMOVE KEYS: ${previousMax}... ${Console.RESET}")
 
         sendMetaTask(metaTask)
       }
@@ -149,7 +149,7 @@ class RangeWorker[K, V](val id: String, intid: Int)(implicit val rangeBuilder: R
             RESPONSE_TOPIC
           )
 
-          println(s"${Console.MAGENTA_B}SENDING UPDATE/INSERT META TASK ${task.id}${Console.RESET}")
+          println(s"${Console.MAGENTA_B}SENDING UPDATE/INSERT META TASK ${task.id} WITH REMOVE SET: ${previousMax} AND INSERT SET: ${metaAfter.map(_._1)}${Console.RESET}")
 
           return sendMetaTask(metaTask)
         }

@@ -29,11 +29,11 @@ class ClusterClient[K, V](val metaCtx: IndexContext)(implicit val metaBuilder: I
   import metaBuilder._
 
   var client_uuid = UUID.randomUUID.toString
+  var port = "0"
 
   val conf =
     ConfigFactory.parseString("akka.http.server.enable-http2 = on").withFallback(ConfigFactory.defaultApplication())
-  implicit  val system = ActorSystem.create(s"client-${client_uuid}", conf)
-  //implicit val provider = system.classicSystem
+  implicit  val system = ActorSystem.create(s"client-${UUID.randomUUID.toString}", conf)
 
   val producerSettings = ProducerSettings[String, Bytes](system, new StringSerializer, new ByteArraySerializer)
     .withBootstrapServers("localhost:9092")
@@ -116,9 +116,11 @@ class ClusterClient[K, V](val metaCtx: IndexContext)(implicit val metaBuilder: I
           TestHelper.loadIndex(metaCtx.id).map(_.get).flatMap { freshCtx =>
             val client = new ClusterClient[K, V](freshCtx)
 
-            client.execute(notSucceed.map(_.commands).flatten).flatMap { rangeCmds =>
-              client.sendTasks(rangeCmds.values.toSeq)
-            }.flatMap(res => client.close().map(_ => res))
+            client.start().flatMap { _ =>
+              client.execute(notSucceed.map(_.commands).flatten).flatMap { rangeCmds =>
+                client.sendTasks(rangeCmds.values.toSeq)
+              }.flatMap(res => client.close().map(_ => res))
+            }
           }
       }
   }
@@ -266,10 +268,44 @@ class ClusterClient[K, V](val metaCtx: IndexContext)(implicit val metaBuilder: I
     }
 
     Future.successful(ranges.map{case (rangeId, (keyCtx, list)) => rangeId ->
-      RangeCommand(UUID.randomUUID.toString, rangeId, metaCtx.id, list, keyCtx._1 -> keyCtx._2, keyCtx._3, client_uuid)})
+      RangeCommand(UUID.randomUUID.toString, rangeId, metaCtx.id, list, keyCtx._1 -> keyCtx._2, keyCtx._3, port)})
   }
 
-  val clientId = UUID.randomUUID.toString
+  //val system = ActorSystem(s"client-${client_uuid}", conf)
+
+  // Create service handlers
+  val service: HttpRequest => Future[HttpResponse] =
+    ClusterClientResponseServiceHandler(new ClusterCliSvcImpl() {
+      override def respond(r: RangeTaskResponse): Future[HelloReply] = {
+
+        //val r = Any.parseFrom(in.record.value()).unpack(RangeTaskResponse)
+
+        println(s"client ${client_uuid} receiving ${r.id} ok: ${r.ok}")
+
+        rangeTasks.remove(r.id).map(_._2.success(r.ok))
+
+        Future.successful(HelloReply(r.id, r.ok))
+      }
+    })
+
+  def start(): Future[Boolean] = {
+    // Bind service handler servers to localhost:8080/8081
+    val binding = Http(system).newServerAt("127.0.0.1", 0).bind(service)
+
+    // Akka boot up code
+    implicit val mat = Materializer(system)
+
+    binding.map { binding =>
+
+      port = binding.localAddress.getPort.toString
+
+      println(s"gRPC server bound to: ${binding.localAddress} at port ${binding.localAddress.getPort}")
+
+      true
+    }
+  }
+
+  // report successful binding
 
   /*val consumerSettings = ConsumerSettings[String, Array[Byte]](system, new StringDeserializer, new ByteArrayDeserializer)
     .withBootstrapServers("localhost:9092")
@@ -303,35 +339,6 @@ class ClusterClient[K, V](val metaCtx: IndexContext)(implicit val metaBuilder: I
     .recover {
       case e: RuntimeException => e.printStackTrace()
     }*/
-
-  // Akka boot up code
-  implicit val mat = Materializer(system)
-
-  //val system = ActorSystem(s"client-${client_uuid}", conf)
-
-  // Create service handlers
-  val service: HttpRequest => Future[HttpResponse] =
-    ClusterClientResponseServiceHandler(new ClusterCliSvcImpl() {
-      override def respond(r: RangeTaskResponse): Future[HelloReply] = {
-
-        //val r = Any.parseFrom(in.record.value()).unpack(RangeTaskResponse)
-
-        println(s"client ${clientId} receiving ${r.id} ok: ${r.ok}")
-
-        rangeTasks.remove(r.id).map(_._2.success(r.ok))
-
-        Future.successful(HelloReply(r.id, r.ok))
-      }
-    })
-
-  // Bind service handler servers to localhost:8080/8081
-  val binding = Http().newServerAt("127.0.0.1", 0).bind(service)
-
-  // report successful binding
-  binding.foreach { binding =>
-    client_uuid = binding.localAddress.getPort.toString
-    println(s"gRPC server bound to: ${binding.localAddress} at port ${binding.localAddress.getPort}")
-  }
 
   def close(): Future[Boolean] = {
     system.terminate()

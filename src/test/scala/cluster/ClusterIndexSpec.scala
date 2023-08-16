@@ -177,6 +177,8 @@ class ClusterIndexSpec extends Repeatable with Matchers {
     assert(rangeData.map{case (k, v, _) => k -> v} == dataSorted.map{case (k, v, _) => k -> v})*/
 
     val client = new ClusterClient[K, V](ctx)(clusterMetaBuilder, session, Serializers.grpcRangeCommandSerializer)
+    Await.result(client.start(), Duration.Inf)
+
     commands = client.normalize(commands, Some(version))
 
     assert(commands.forall(x => x.version.isDefined && x.version.get == TestConfig.TX_VERSION))
@@ -222,6 +224,7 @@ class ClusterIndexSpec extends Repeatable with Matchers {
 
     //val ctx2 = Await.result(TestHelper.loadIndex(ctx.id), Duration.Inf).get
     val client2 = new ClusterClient[K, V](ctx)(clusterMetaBuilder, session, Serializers.grpcRangeCommandSerializer)
+    Await.result(client2.start(), Duration.Inf)
 
     response = Await.result(client2.execute(commands).flatMap { cmds =>
       client2.sendTasks(cmds.values.toSeq).flatMap(res => client2.close().map(_ => res))
