@@ -11,7 +11,7 @@ import services.scalable.index.impl.{CassandraStorage, DefaultCache}
 import services.scalable.index.{Commands, DefaultComparators, DefaultIdGenerators, DefaultSerializers, IndexBuilder}
 
 import java.util.concurrent.ThreadLocalRandom
-import scala.concurrent.Await
+import scala.concurrent.{Await, Future}
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.duration.Duration
 
@@ -207,7 +207,7 @@ class ClusterIndexSpec extends Repeatable with Matchers {
 
     commands = Seq.empty[Commands.Command[K, V]]
 
-    for (i <- 0 until 5) {
+    for (i <- 0 until 10) {
       commands = commands ++ (rand.nextInt(1, 4) match {
         case 1 => insert()
         case 2 => update()
@@ -218,36 +218,20 @@ class ClusterIndexSpec extends Repeatable with Matchers {
     val listIndex2 = data.sortBy(_._1)
     println(s"${Console.YELLOW_B}listindex2 after range cmds inserted: ${TestHelper.saveListIndex(indexId, listIndex2, storage.session, rangeBuilder.ks, rangeBuilder.vs)}${Console.RESET}")
 
-    response = Await.result(client.execute(commands).flatMap { cmds =>
+    commands = client.normalize(commands, Some(version))
 
-      val ctx2 = Await.result(TestHelper.loadIndex(ctx.id), Duration.Inf).get
-      val client2 = new ClusterClient[K, V](ctx2)(clusterMetaBuilder, session, Serializers.grpcRangeCommandSerializer)
+    //val ctx2 = Await.result(TestHelper.loadIndex(ctx.id), Duration.Inf).get
+    val client2 = new ClusterClient[K, V](ctx)(clusterMetaBuilder, session, Serializers.grpcRangeCommandSerializer)
 
-      client2.sendTasks(cmds.values.toSeq)//.flatMap(res => client2.close().map(_ => res))
+    response = Await.result(client2.execute(commands).flatMap { cmds =>
+      client2.sendTasks(cmds.values.toSeq).flatMap(res => client2.close().map(_ => res))
     }, Duration.Inf)
-
-    val all = response.forall(_._2 == true)
-
-    if(!all){
-      val notSucceeded = response.filterNot(_._2).map(_._1.commands).flatten
-
-      val ctx2 = Await.result(TestHelper.loadIndex(ctx.id), Duration.Inf).get
-      val client2 = new ClusterClient[K, V](ctx2)(clusterMetaBuilder, session, Serializers.grpcRangeCommandSerializer)
-
-      response = Await.result(client2.execute(notSucceeded).flatMap { cmds =>
-        client2.sendTasks(cmds.values.toSeq)
-      }, Duration.Inf)
-
-      assert(response.forall(_._2 == true))
-
-      Await.result(client2.close(), Duration.Inf)
-
-      println()
-    }
 
     compare()
 
-    Await.result(client.close().flatMap(_ => storage.close()), Duration.Inf)
+    Await.result(Future.sequence(Seq(
+      client.close()
+    )).flatMap(_ => storage.close()), Duration.Inf)
     session.close()
   }
 

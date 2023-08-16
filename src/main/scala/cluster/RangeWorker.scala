@@ -1,13 +1,15 @@
 package cluster
 
 import akka.actor.ActorSystem
+import akka.grpc.GrpcClientSettings
 import akka.kafka.scaladsl.{Committer, Consumer, Producer}
 import akka.kafka._
 import akka.stream.scaladsl.{Sink, Source}
 import cluster.ClusterCommands.{MetaCommand, RangeCommand}
-import cluster.grpc.{KeyIndexContext, MetaTaskResponse, RangeTask, RangeTaskResponse}
+import cluster.grpc.{ClusterClientResponseServiceClient, KeyIndexContext, MetaTaskResponse, RangeTask, RangeTaskResponse}
 import cluster.helpers.{TestConfig, TestHelper}
 import com.google.protobuf.any.Any
+import com.typesafe.config.ConfigFactory
 import org.apache.kafka.clients.consumer.ConsumerConfig
 import org.apache.kafka.clients.producer.ProducerRecord
 import org.apache.kafka.common.serialization.{ByteArrayDeserializer, ByteArraySerializer, StringDeserializer, StringSerializer}
@@ -31,7 +33,10 @@ class RangeWorker[K, V](val id: String, intid: Int)(implicit val rangeBuilder: R
 
   val logger = LoggerFactory.getLogger(this.getClass)
 
-  implicit val system = ActorSystem.create()
+  val conf =
+    ConfigFactory.parseString("akka.http.server.enable-http2 = on").withFallback(ConfigFactory.defaultApplication())
+
+  implicit val system = ActorSystem.create(s"range-worker-$intid", conf)
 
   val taskConsumerSettings = ConsumerSettings[String, Array[Byte]](system, new StringDeserializer, new ByteArrayDeserializer)
     .withBootstrapServers("localhost:9092")
@@ -179,6 +184,16 @@ class RangeWorker[K, V](val id: String, intid: Int)(implicit val rangeBuilder: R
         .flatMap(_ => checkAfterExecution(cindex, (previousMax, Some(task.keyInMeta.version))))
     }
 
+    // Configure the client by code:
+    val clientSettings = GrpcClientSettings.connectToServiceAt("127.0.0.1", task.responseTopic.toInt)
+      .withTls(false)
+
+    // Or via application.conf:
+    // val clientSettings = GrpcClientSettings.fromConfig(GreeterService.name)
+
+    // Create a client-side stub for the service
+    val client: ClusterClientResponseServiceClient = ClusterClientResponseServiceClient(clientSettings)
+
     TestHelper.getRange(task.rangeId).map(_.get).flatMap { rangeMeta =>
       val rangeVersion = rangeMeta.lastChangeVersion
       val hasChanged = task.lastChangeVersion.compareTo(rangeVersion) != 0
@@ -191,15 +206,18 @@ class RangeWorker[K, V](val id: String, intid: Int)(implicit val rangeBuilder: R
         println(s"\n\n${Console.RED_B} RANGE ${task.rangeId} HAS CHANGED FROM ${task.lastChangeVersion} to ${rangeVersion}... REDIRECTING OPERATIONS...${Console.RESET}\n\n")
 
         // Retry on client side...
-        sendResponse(RangeTaskResponse(task.id, task.responseTopic, false))
+        //sendResponse(RangeTaskResponse(task.id, task.responseTopic, false))
+
+        client.respond(RangeTaskResponse(task.id, task.responseTopic, false)).map(_.ok)
       } else {
         ClusterIndex.fromRangeIndexId[K, V](task.rangeId, TestConfig.MAX_RANGE_ITEMS)
           .flatMap(execute)
           .flatMap { res =>
-            sendResponse(RangeTaskResponse(task.id, task.responseTopic, true))
+            //sendResponse(RangeTaskResponse(task.id, task.responseTopic, true))
+            client.respond(RangeTaskResponse(task.id, task.responseTopic, true)).map(_.ok)
           }
       }
-    }
+    }.flatMap(_ => client.close().map(_ => true))
   }
 
   def handler(msg: ConsumerMessage.CommittableMessage[String, Array[Byte]]): Future[Boolean] = {

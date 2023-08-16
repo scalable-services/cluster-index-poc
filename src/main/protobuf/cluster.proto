@@ -66,3 +66,14 @@ message RangeTaskResponse {
     bool ok = 3;
 }
 
+////////////////////////////////////// The greeting service definition.
+service ClusterClientResponseService {
+    rpc respond (RangeTaskResponse) returns (HelloReply) {}
+}
+
+// The response message containing the greetings
+message HelloReply {
+    string id = 1;
+    bool ok = 2;
+}
+

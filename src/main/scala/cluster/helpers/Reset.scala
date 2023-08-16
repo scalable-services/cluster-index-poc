@@ -6,6 +6,11 @@ import scala.jdk.CollectionConverters.{CollectionHasAsScala, SeqHasAsJava}
 
 object Reset {
 
+  val config = new java.util.Properties()
+  config.put(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092")
+
+  val admin = AdminClient.create(config)
+
   def main(args: Array[String]): Unit = {
 
     val session = TestHelper.getSession()
@@ -16,11 +21,6 @@ object Reset {
     println(session.execute("truncate table test_indexes;").wasApplied())
 
     session.close()
-
-    val config = new java.util.Properties()
-    config.put(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092")
-
-    val admin = AdminClient.create(config)
 
     var topics = Seq(TestConfig.META_INDEX_TOPIC)
 

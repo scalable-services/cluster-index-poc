@@ -1,24 +1,26 @@
 package cluster
 
-import akka.actor.{ActorSystem, Terminated}
-import akka.kafka.{CommitDelivery, CommitterSettings, ConsumerMessage, ConsumerSettings, ProducerSettings, Subscriptions}
-import akka.kafka.scaladsl.{Committer, Consumer, Producer}
-import akka.stream.scaladsl.{Sink, Source}
+import akka.actor.ActorSystem
+import akka.http.scaladsl.Http
+import akka.http.scaladsl.model.{HttpRequest, HttpResponse}
+import akka.kafka.ProducerSettings
+import akka.kafka.scaladsl.Producer
+import akka.stream.Materializer
+import akka.stream.scaladsl.Source
 import cluster.ClusterCommands.RangeCommand
-import cluster.grpc.{ClusterIndexCommand, KeyIndexContext, MetaTask, RangeIndexMeta, RangeTask, RangeTaskResponse}
+import cluster.grpc.{ClusterClientResponseServiceHandler, HelloReply, KeyIndexContext, RangeTaskResponse}
 import cluster.helpers.{TestConfig, TestHelper}
 import com.datastax.oss.driver.api.core.CqlSession
-import com.google.protobuf.any.Any
-import org.apache.kafka.clients.consumer.ConsumerConfig
+import com.typesafe.config.ConfigFactory
 import org.apache.kafka.clients.producer.ProducerRecord
-import org.apache.kafka.common.serialization.{ByteArrayDeserializer, ByteArraySerializer, StringDeserializer, StringSerializer}
+import org.apache.kafka.common.serialization.{ByteArraySerializer, StringSerializer}
 import services.scalable.index.grpc.IndexContext
 import services.scalable.index.{Bytes, Commands, IndexBuilder, QueryableIndex}
 
 import java.util.UUID
 import scala.collection.concurrent.TrieMap
 import scala.concurrent.duration.Duration
-import scala.concurrent.{Await, Future, Promise}
+import scala.concurrent.{Await, ExecutionContext, Future, Promise}
 import scala.util.hashing.MurmurHash3
 
 class ClusterClient[K, V](val metaCtx: IndexContext)(implicit val metaBuilder: IndexBuilder[K, KeyIndexContext],
@@ -26,10 +28,12 @@ class ClusterClient[K, V](val metaCtx: IndexContext)(implicit val metaBuilder: I
                                                      val rangeCommandSerializer: GrpcRangeCommandSerializer[K, V]){
   import metaBuilder._
 
-  val client_uuid = UUID.randomUUID.toString
+  var client_uuid = UUID.randomUUID.toString
 
-  val system = ActorSystem.create()
-  implicit val provider = system.classicSystem
+  val conf =
+    ConfigFactory.parseString("akka.http.server.enable-http2 = on").withFallback(ConfigFactory.defaultApplication())
+  implicit  val system = ActorSystem.create(s"client-${client_uuid}", conf)
+  //implicit val provider = system.classicSystem
 
   val producerSettings = ProducerSettings[String, Bytes](system, new StringSerializer, new ByteArraySerializer)
     .withBootstrapServers("localhost:9092")
@@ -82,10 +86,10 @@ class ClusterClient[K, V](val metaCtx: IndexContext)(implicit val metaBuilder: I
     }.flatten.toSeq
   }
 
-  def sendTasks(tasks: Seq[RangeCommand[K, V]]): Future[Seq[(RangeCommand[K, V], Boolean)]] = {
-    val records = tasks.map { rc =>
+  def sendTasks(tasks: Seq[RangeCommand[K, V]]): Future[Boolean] /*Future[Seq[(RangeCommand[K, V], Boolean)]]*/ = {
+    if(tasks.isEmpty) return Future.successful(true)
 
-      rc.responseTopic = client_uuid
+    val records = tasks.map { rc =>
 
       val id = MurmurHash3.stringHash(rc.rangeId).abs % TestConfig.N_PARTITIONS
       new ProducerRecord[String, Bytes](s"${TestConfig.RANGE_INDEX_TOPIC}-${id}", rc.id,
@@ -101,10 +105,9 @@ class ClusterClient[K, V](val metaCtx: IndexContext)(implicit val metaBuilder: I
     Source(records)
       .runWith(Producer.plainSink(settingsWithProducer))
       .flatMap(_ => Future.sequence(futures))
-      /*.flatMap {
+      .flatMap {
         case results if results.forall(_._2 == true) => Future.successful(true)
         case results =>
-
           val succeed = results.filter(_._2).map(_._1)
           val notSucceed = results.filterNot(_._2).map(_._1)
 
@@ -117,7 +120,7 @@ class ClusterClient[K, V](val metaCtx: IndexContext)(implicit val metaBuilder: I
               client.sendTasks(rangeCmds.values.toSeq)
             }.flatMap(res => client.close().map(_ => res))
           }
-      }*/
+      }
   }
 
   val meta = new QueryableIndex[K, KeyIndexContext](metaCtx)(metaBuilder)
@@ -268,7 +271,7 @@ class ClusterClient[K, V](val metaCtx: IndexContext)(implicit val metaBuilder: I
 
   val clientId = UUID.randomUUID.toString
 
-  val consumerSettings = ConsumerSettings[String, Array[Byte]](system, new StringDeserializer, new ByteArrayDeserializer)
+  /*val consumerSettings = ConsumerSettings[String, Array[Byte]](system, new StringDeserializer, new ByteArrayDeserializer)
     .withBootstrapServers("localhost:9092")
     .withGroupId(clientId)
     .withProperty(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest")
@@ -299,10 +302,41 @@ class ClusterClient[K, V](val metaCtx: IndexContext)(implicit val metaBuilder: I
     .runWith(Sink.ignore)
     .recover {
       case e: RuntimeException => e.printStackTrace()
-    }
+    }*/
 
-  def close(): Future[Terminated] = {
+  // Akka boot up code
+  implicit val mat = Materializer(system)
+
+  //val system = ActorSystem(s"client-${client_uuid}", conf)
+
+  // Create service handlers
+  val service: HttpRequest => Future[HttpResponse] =
+    ClusterClientResponseServiceHandler(new ClusterCliSvcImpl() {
+      override def respond(r: RangeTaskResponse): Future[HelloReply] = {
+
+        //val r = Any.parseFrom(in.record.value()).unpack(RangeTaskResponse)
+
+        println(s"client ${clientId} receiving ${r.id} ok: ${r.ok}")
+
+        rangeTasks.remove(r.id).map(_._2.success(r.ok))
+
+        Future.successful(HelloReply(r.id, r.ok))
+      }
+    })
+
+  // Bind service handler servers to localhost:8080/8081
+  val binding = Http().newServerAt("127.0.0.1", 0).bind(service)
+
+  // report successful binding
+  binding.foreach { binding =>
+    client_uuid = binding.localAddress.getPort.toString
+    println(s"gRPC server bound to: ${binding.localAddress} at port ${binding.localAddress.getPort}")
+  }
+
+  def close(): Future[Boolean] = {
     system.terminate()
+      .flatMap(_ => system.whenTerminated)
+      .map(_ => true)
   }
 
 }

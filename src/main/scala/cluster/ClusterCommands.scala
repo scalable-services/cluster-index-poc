@@ -14,7 +14,7 @@ object ClusterCommands {
                                 commands: Seq[Commands.Command[K, V]],
                                 keyInMeta: Tuple2[K, String],
                                 lastChangeVersion: String,
-                                var responseTopic: String
+                                responseTopic: String
                                ) extends ClusterCommand[K, V]
   case class MetaCommand[K](override val id: String,
                                metaId: String,
