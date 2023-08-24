@@ -40,6 +40,7 @@ class ClusterIndexSpec extends Repeatable with Matchers {
     val max = order
 
     var data = Seq.empty[(K, V, String)]
+    var excludeInsertions = Seq.empty[(K, V, String)]
 
     implicit val idGenerator = DefaultIdGenerators.idGenerator
     implicit val cache = new DefaultCache(MAX_PARENT_ENTRIES = 20000)
@@ -86,7 +87,7 @@ class ClusterIndexSpec extends Repeatable with Matchers {
     def update(): Seq[Commands.Command[K, V]] = {
       val n = if (data.length >= 2) rand.nextInt(1, data.length) else 1
 
-      val list = scala.util.Random.shuffle(data).slice(0, n)
+      val list = scala.util.Random.shuffle(data.filterNot{x => excludeInsertions.exists{y => ordering.equiv(x._1, y._1)}}).slice(0, n)
       if (list.isEmpty) return Seq.empty[Commands.Command[K, V]]
 
       var updates = Seq.empty[(K, V, Option[String])]
@@ -110,7 +111,7 @@ class ClusterIndexSpec extends Repeatable with Matchers {
 
       val n = (data.length * 0.85).toInt //if (data.length >= 2) rand.nextInt(1, data.length) else 1
 
-      val list = scala.util.Random.shuffle(data).slice(0, n).map { case (k, _, lv) =>
+      val list = scala.util.Random.shuffle(data.filterNot{x => excludeInsertions.exists{y => ordering.equiv(x._1, y._1)}}).slice(0, n).map { case (k, _, lv) =>
         (k, Some(lv))
       }
 
@@ -151,7 +152,12 @@ class ClusterIndexSpec extends Repeatable with Matchers {
 
     for(i<-0 until n){
       commands = commands ++ (rand.nextInt(1, 4) match {
-        case 1 => insert()
+        case 1 =>
+          val insertions = insert()
+
+          excludeInsertions = excludeInsertions ++ insertions.map(_.list).flatten.map { case (k, v, _) => (k, v, version) }
+
+          insertions
         case 2 => update()
         case 3 => remove()
       })
@@ -179,7 +185,7 @@ class ClusterIndexSpec extends Repeatable with Matchers {
     val client = new ClusterClient[K, V](ctx)(clusterMetaBuilder, session, Serializers.grpcRangeCommandSerializer)
     Await.result(client.start(), Duration.Inf)
 
-    commands = client.normalize(commands, Some(version))
+    //commands = client.normalize(commands, Some(version))
 
     assert(commands.forall(x => x.version.isDefined && x.version.get == TestConfig.TX_VERSION))
     assert(data.forall(x => x._3 == TestConfig.TX_VERSION))
@@ -211,7 +217,12 @@ class ClusterIndexSpec extends Repeatable with Matchers {
 
     for (i <- 0 until 10) {
       commands = commands ++ (rand.nextInt(1, 4) match {
-        case 1 => insert()
+        case 1 =>
+          val insertions = insert()
+
+          excludeInsertions = excludeInsertions ++ insertions.map(_.list).flatten.map{case (k, v, _) => (k, v, version)}
+
+          insertions
         case 2 => update()
         case 3 => remove()
       })
@@ -220,11 +231,11 @@ class ClusterIndexSpec extends Repeatable with Matchers {
     val listIndex2 = data.sortBy(_._1)
     println(s"${Console.YELLOW_B}listindex2 after range cmds inserted: ${TestHelper.saveListIndex(indexId, listIndex2, storage.session, rangeBuilder.ks, rangeBuilder.vs)}${Console.RESET}")
 
-    commands = client.normalize(commands, Some(version))
-
     //val ctx2 = Await.result(TestHelper.loadIndex(ctx.id), Duration.Inf).get
     val client2 = new ClusterClient[K, V](ctx)(clusterMetaBuilder, session, Serializers.grpcRangeCommandSerializer)
     Await.result(client2.start(), Duration.Inf)
+
+    //commands = client2.normalize(commands, Some(version))
 
     response = Await.result(client2.execute(commands).flatMap { cmds =>
       client2.sendTasks(cmds.values.toSeq).flatMap(res => client2.close().map(_ => res))

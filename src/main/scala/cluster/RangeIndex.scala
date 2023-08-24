@@ -165,6 +165,8 @@ class RangeIndex[K, V](var meta: RangeIndexMeta)(implicit val builder: RangeBuil
 
     println(s"${Console.YELLOW_B}changed version for range ${meta.id}...${Console.RESET}")
 
+    meta = meta.withLastChangeVersion(UUID.randomUUID.toString)
+
     val rcrange = RangeIndexMeta()
       .withId(UUID.randomUUID.toString)
       .withOrder(meta.order)

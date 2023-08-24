@@ -77,7 +77,7 @@ class ClusterIndex[K, V](val metaContext: IndexContext, val maxNItems: Int)(impl
     meta.execute(Seq(Commands.Insert[K, KeyIndexContext](
       metaContext.id,
       Seq(Tuple3(max._1, KeyIndexContext(ByteString.copyFrom(rangeBuilder.ks.serialize(max._1)),
-        left.meta.id, left.meta.lastChangeVersion), true)),
+        left.meta.id, left.meta.lastChangeVersion), false)),
       Some(version)
     )))
   }
@@ -135,7 +135,7 @@ class ClusterIndex[K, V](val metaContext: IndexContext, val maxNItems: Int)(impl
 
     println(s"inserted range ${range.meta.id}...")
 
-    val (result, hasChanged) = range.execute(Seq(Commands.Insert[K, V](metaContext.id, slice, Some(version))), version)
+    val (result, hasChanged) = range.execute(Seq(Commands.Insert[K, V](rangeMeta.id, slice, Some(version))), version)
 
     assert(result.success, result.error.get)
 
@@ -192,7 +192,7 @@ class ClusterIndex[K, V](val metaContext: IndexContext, val maxNItems: Int)(impl
         Commands.Remove[K, KeyIndexContext](metaContext.id, Seq(last), Some(version)),
         Commands.Insert[K, KeyIndexContext](metaContext.id, Seq(
           Tuple3(lm, KeyIndexContext(ByteString.copyFrom(rangeBuilder.ks.serialize(lm)),
-            left.meta.id, left.meta.lastChangeVersion), false)
+            lindex.meta.id, lindex.meta.lastChangeVersion), false)
         ), Some(version))
       )).map{_ => slice.length}
     }
@@ -442,7 +442,7 @@ object ClusterIndex {
       val version = TestConfig.TX_VERSION
 
       cindex.meta.execute(Seq(
-        Commands.Insert[K, KeyIndexContext](cindex.meta.ctx.indexId, Seq(
+        Commands.Insert[K, KeyIndexContext](cindex.metaContext.id, Seq(
           Tuple3(max, KeyIndexContext(ByteString.copyFrom(rangeBuilder.ks.serialize(max)),
             rangeIndex.meta.id, rangeIndex.meta.lastChangeVersion), false)
         ), Some(version))
