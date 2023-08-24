@@ -66,34 +66,55 @@ class ClusterIndex[K, V](val metaContext: IndexContext, val maxNItems: Int)(impl
     }
   }
 
-  def insertMeta(left: RangeIndex[K, V], version: String): Future[InsertionResult] = {
+  def insertMeta(left: RangeIndex[K, V], version: String): Future[BatchResult] = {
     println(s"insert indexes in meta[1]: left ${left.meta.id}")
 
     val max = left.max
 
-    meta.insert(Seq(Tuple3(max._1, KeyIndexContext(ByteString.copyFrom(rangeBuilder.ks.serialize(max._1)),
-      left.meta.id, left.meta.lastChangeVersion), true)), version)
+    /*meta.insert(Seq(Tuple3(max._1, KeyIndexContext(ByteString.copyFrom(rangeBuilder.ks.serialize(max._1)),
+      left.meta.id, left.meta.lastChangeVersion), true)), version)*/
+
+    meta.execute(Seq(Commands.Insert[K, KeyIndexContext](
+      metaContext.id,
+      Seq(Tuple3(max._1, KeyIndexContext(ByteString.copyFrom(rangeBuilder.ks.serialize(max._1)),
+        left.meta.id, left.meta.lastChangeVersion), false)),
+      Some(version)
+    )))
   }
 
-  def insertMeta(left: RangeIndex[K, V], right: RangeIndex[K, V], last: (K, Option[String]), version: String): Future[InsertionResult] = {
+  def insertMeta(left: RangeIndex[K, V], right: RangeIndex[K, V], last: (K, Option[String]), version: String): Future[BatchResult] = {
     val lm = left.max._1
     val rm = right.max._1
 
     println(s"inserting indexes in meta[2]: left ${left.meta.id} right: ${right.meta.id}")
 
-    meta.remove(Seq(last)).flatMap { ok =>
+    /*meta.remove(Seq(last)).flatMap { ok =>
       meta.insert(Seq(
         Tuple3(lm, KeyIndexContext(ByteString.copyFrom(rangeBuilder.ks.serialize(lm)),
           left.meta.id, left.meta.lastChangeVersion), true),
         Tuple3(rm, KeyIndexContext(ByteString.copyFrom(rangeBuilder.ks.serialize(rm)),
           right.meta.id, right.meta.lastChangeVersion), true)
       ), version)
-    }
+    }*/
+
+    meta.execute(Seq(
+      Commands.Remove[K, KeyIndexContext](metaContext.id, Seq(last), Some(version)),
+      Commands.Insert[K, KeyIndexContext](metaContext.id, Seq(
+        Tuple3(lm, KeyIndexContext(ByteString.copyFrom(rangeBuilder.ks.serialize(lm)),
+          left.meta.id, left.meta.lastChangeVersion), false),
+        Tuple3(rm, KeyIndexContext(ByteString.copyFrom(rangeBuilder.ks.serialize(rm)),
+          right.meta.id, right.meta.lastChangeVersion), false)
+      ), Some(version))
+    ))
   }
 
-  def removeFromMeta(last: (K, Option[String])): Future[RemovalResult] = {
+  def removeFromMeta(last: (K, Option[String]), version: String): Future[BatchResult] = {
     println(s"removing from meta: ${last}...")
-    meta.remove(Seq(last))
+    //meta.remove(Seq(last))
+
+    meta.execute(Seq(
+      Commands.Remove[K, KeyIndexContext](metaContext.id, Seq(last), Some(version))
+    ))
   }
 
   def insertEmpty(data: Seq[Tuple3[K, V, Boolean]], version: String): Future[Int] = {
@@ -114,11 +135,11 @@ class ClusterIndex[K, V](val metaContext: IndexContext, val maxNItems: Int)(impl
 
     println(s"inserted range ${range.meta.id}...")
 
-    val result = range.insert(slice, version)
+    val (result, hasChanged) = range.execute(Seq(Commands.Insert[K, V](rangeMeta.id, slice, Some(version))), version)
 
     assert(result.success, result.error.get)
 
-    insertMeta(range, version).map(_ => result.n)
+    insertMeta(range, version).map(_ => slice.length)
   }
 
   def insertRange(left: RangeIndex[K, V], list: Seq[Tuple3[K, V, Boolean]], last: (K, Option[String]),
@@ -150,21 +171,30 @@ class ClusterIndex[K, V](val metaContext: IndexContext, val maxNItems: Int)(impl
 
     //ranges.put(lindex.meta.id, lindex)
 
-    val ir = lindex.insert(slice, version)
-    assert(ir.success)
+    val (ir, hasChanged) = lindex.execute(Seq(Commands.Insert[K, V](metaContext.id, slice, Some(version))), version)
+    assert(ir.success, ir.error.get)
 
     val lm = lindex.max._1
 
     // Update range index on disk
     ranges.put(lindex.meta.id, lindex)
 
-    if(!rangeBuilder.ordering.equiv(lm, last._1)){
-      return meta.remove(Seq(last)).flatMap { ok =>
+    if(hasChanged){
+
+      /*return meta.remove(Seq(last)).flatMap { ok =>
         meta.insert(Seq(
           Tuple3(lm, KeyIndexContext(ByteString.copyFrom(rangeBuilder.ks.serialize(lm)),
             lindex.meta.id, lindex.meta.lastChangeVersion), true)
         ), version)
-      }.map(_ => slice.length)
+      }.map(_ => slice.length)*/
+
+      return meta.execute(Seq(
+        Commands.Remove[K, KeyIndexContext](metaContext.id, Seq(last), Some(version)),
+        Commands.Insert[K, KeyIndexContext](metaContext.id, Seq(
+          Tuple3(lm, KeyIndexContext(ByteString.copyFrom(rangeBuilder.ks.serialize(lm)),
+            lindex.meta.id, lindex.meta.lastChangeVersion), false)
+        ), Some(version))
+      )).map{_ => slice.length}
     }
 
     Future.successful(slice.length)
@@ -209,8 +239,12 @@ class ClusterIndex[K, V](val metaContext: IndexContext, val maxNItems: Int)(impl
     insert().map { n =>
       InsertionResult(true, n)
     }.recover {
-      case t: IndexError => InsertionResult(false, 0, Some(t))
-      case t: Throwable => throw t
+      case t: IndexError =>
+        t.printStackTrace()
+        InsertionResult(false, 0, Some(t))
+      case t: Throwable =>
+        t.printStackTrace()
+        throw t
     }
   }
 
@@ -239,20 +273,18 @@ class ClusterIndex[K, V](val metaContext: IndexContext, val maxNItems: Int)(impl
           if (idx > 0) list = list.slice(0, idx)
 
           val copy = range.copy(true)
-          val r = copy.update(list, version)
-
+          val (r, _) = copy.execute(Seq(Commands.Update[K, V](metaContext.id, list, Some(version))), version)
           assert(r.success, r.error.get)
 
-          Future.successful(r -> copy)
-
-      }.flatMap { case (res, copy) =>
+          Future.successful((r, copy, list.length))
+      }.flatMap { case (res, copy, n) =>
         if (!res.success) {
           throw res.error.get
         } else {
 
           ranges.update(copy.meta.id, copy)
 
-          pos += res.n
+          pos += n
           update()
         }
       }
@@ -261,12 +293,16 @@ class ClusterIndex[K, V](val metaContext: IndexContext, val maxNItems: Int)(impl
     update().map { n =>
       UpdateResult(true, n)
     }.recover {
-      case t: IndexError => UpdateResult(false, 0, Some(t))
-      case t: Throwable => throw t
+      case t: IndexError =>
+        t.printStackTrace()
+        UpdateResult(false, 0, Some(t))
+      case t: Throwable =>
+        t.printStackTrace()
+        throw t
     }
   }
 
-  def remove(data: Seq[Tuple2[K, Option[String]]])(implicit ord: Ordering[K]): Future[RemovalResult] = {
+  def remove(data: Seq[Tuple2[K, Option[String]]], version: String)(implicit ord: Ordering[K]): Future[RemovalResult] = {
 
     val sorted = data.sortBy(_._1)
 
@@ -291,25 +327,35 @@ class ClusterIndex[K, V](val metaContext: IndexContext, val maxNItems: Int)(impl
           if (idx > 0) list = list.slice(0, idx)
 
           val copy = range.copy(true)
-          val r = copy.remove(list)
+          val (r, hasChanged) = copy.execute(Seq(Commands.Remove[K, V](metaContext.id, list)), version)
 
           assert(r.success, r.error.get)
 
-          if (!copy.isEmpty()) {
-            Future.successful(r -> copy)
+          if (!hasChanged) {
+            Future.successful((r, copy, list.length))
+          } else if(copy.isEmpty()) {
+            removeFromMeta(last -> Some(vs), version).map { res =>
+              (r, copy, list.length)
+            }
           } else {
-            removeFromMeta(last -> Some(vs)).map { res =>
-              r -> copy
+            meta.execute(Seq(
+              Commands.Remove[K, KeyIndexContext](metaContext.id, Seq(last -> Some(vs)), Some(version)),
+              Commands.Insert[K, KeyIndexContext](metaContext.id, Seq(
+                Tuple3(copy.max._1, KeyIndexContext(ByteString.copyFrom(rangeBuilder.ks.serialize(copy.max._1)),
+                  copy.meta.id, copy.meta.lastChangeVersion), false)
+              ), Some(version))
+            )).map { r =>
+              (r, copy, list.length)
             }
           }
-      }.flatMap { case (res, copy) =>
+      }.flatMap { case (res, copy, n) =>
 
         if (!res.success) {
           throw res.error.get
         } else {
           ranges.put(copy.meta.id, copy)
 
-          pos += res.n
+          pos += n
           remove()
         }
       }
@@ -318,8 +364,12 @@ class ClusterIndex[K, V](val metaContext: IndexContext, val maxNItems: Int)(impl
     remove().map { n =>
       RemovalResult(true, n)
     }.recover {
-      case t: IndexError => RemovalResult(false, 0, Some(t))
-      case t: Throwable => throw t
+      case t: IndexError =>
+        t.printStackTrace()
+        RemovalResult(false, 0, Some(t))
+      case t: Throwable =>
+        t.printStackTrace()
+        throw t
     }
   }
 
@@ -339,7 +389,7 @@ class ClusterIndex[K, V](val metaContext: IndexContext, val maxNItems: Int)(impl
       (cmd match {
         case cmd: Insert[K, V] => insert(cmd.list, version)
         case cmd: Update[K, V] => update(cmd.list, version)
-        case cmd: Remove[K, V] => remove(cmd.keys)
+        case cmd: Remove[K, V] => remove(cmd.keys, version)
       }).flatMap(prev => process(pos + 1, prev.error))
     }
 
@@ -386,8 +436,19 @@ object ClusterIndex {
       val max = rangeIndex.max._1
 
       cindex.ranges.put(rangeId, rangeIndex)
-      cindex.meta.insert(Seq(Tuple3(max, KeyIndexContext(ByteString.copyFrom(rangeBuilder.ks.serialize(max)),
-        rangeId, rangeCtx.lastChangeVersion), false)), cindex.meta.ctx.id).map(_ => cindex)
+      /*cindex.meta.insert(Seq(Tuple3(max, KeyIndexContext(ByteString.copyFrom(rangeBuilder.ks.serialize(max)),
+        rangeId, rangeCtx.lastChangeVersion), false)), cindex.meta.ctx.id).map(_ => cindex)*/
+
+      val version = TestConfig.TX_VERSION
+
+      cindex.meta.execute(Seq(
+        Commands.Insert[K, KeyIndexContext](cindex.metaContext.id, Seq(
+          Tuple3(max, KeyIndexContext(ByteString.copyFrom(rangeBuilder.ks.serialize(max)),
+            rangeIndex.meta.id, rangeIndex.meta.lastChangeVersion), false)
+        ), Some(version))
+      )).map { _ =>
+        cindex
+      }
     }
 
     TestHelper.getRange(rangeId).map(_.get).flatMap(construct)

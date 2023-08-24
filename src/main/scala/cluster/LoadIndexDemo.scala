@@ -7,7 +7,7 @@ import org.slf4j.LoggerFactory
 import services.scalable.index.impl._
 import services.scalable.index.{DefaultComparators, DefaultIdGenerators, DefaultSerializers, IndexBuilder}
 
-import scala.concurrent.Await
+import scala.concurrent.{Await, Future}
 import scala.concurrent.duration.Duration
 
 object LoadIndexDemo {
@@ -61,17 +61,20 @@ object LoadIndexDemo {
     cindex.inOrder().map{case (k, v, _) => (k, v)}
   }
 
-  def main(args: Array[String]): Unit = {
-    val indexIdBefore = s"after-$indexId"
-
-    val ilist = loadAll().toList
-
+  def loadListIndex(indexId: String): Seq[(K, V)] = {
     val ks = DefaultSerializers.stringSerializer
     val vs = ks
 
-    val ldata = TestHelper.loadListIndex(indexIdBefore, storage.session).get.data.map { pair =>
+    TestHelper.loadListIndex(indexId, storage.session).get.data.map { pair =>
       ks.deserialize(pair.key.toByteArray) -> vs.deserialize(pair.value.toByteArray)
     }.toList
+  }
+
+  def main(args: Array[String]): Unit = {
+    val indexIdAfter = s"after-$indexId"
+
+    val ilist = loadAll().toList
+    val ldata = loadListIndex(indexIdAfter)
 
     logger.info(s"${Console.GREEN_B}  ldata (ref) len: ${ldata.length}: ${ldata}${Console.RESET}\n")
     logger.info(s"${Console.MAGENTA_B}idata len:       ${ilist.length}: ${ilist}${Console.RESET}\n")

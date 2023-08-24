@@ -9,7 +9,7 @@ lazy val root = (project in file("."))
 
 val jacksonVersion = "2.11.4"
 lazy val akkaVersion = "2.7.0"
-lazy val akkaHttpVersion = "10.2.10"
+lazy val akkaHttpVersion = "10.5.0-M1"
 val pulsarVersion = "3.0.0"
 
 ThisBuild / libraryDependencies ++= Seq(

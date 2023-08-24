@@ -42,7 +42,10 @@ message RangeTask {
     string id = 1;
     string rangeId = 2;
     repeated bytes commands = 3;
-    string lastChangeVersion = 4;
+    services.scalable.index.grpc.KVPair keyInMeta = 4 [(scalapb.field).no_box = true];
+    string lastChangeVersion = 5;
+    string responseTopic = 6;
+    string indexId = 7;
 }
 
 message MetaTaskResponse {
@@ -53,5 +56,24 @@ message MetaTaskResponse {
     string responseTopic = 3;
     bool ok = 4;
     services.scalable.index.grpc.IndexContext metaCtx = 5;
+}
+
+message RangeTaskResponse {
+    option (scalapb.message).extends = "cluster.grpc.ClusterIndexCommand";
+
+    string id = 1;
+    string responseTopic = 2;
+    bool ok = 3;
+}
+
+////////////////////////////////////// The greeting service definition.
+service ClusterClientResponseService {
+    rpc respond (RangeTaskResponse) returns (HelloReply) {}
+}
+
+// The response message containing the greetings
+message HelloReply {
+    string id = 1;
+    bool ok = 2;
 }
 

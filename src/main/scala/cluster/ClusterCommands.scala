@@ -10,8 +10,12 @@ object ClusterCommands {
 
   case class RangeCommand[K, V](override val id: String,
                                 rangeId: String,
+                                indexId: String,
                                 commands: Seq[Commands.Command[K, V]],
-                                lastChangeVersion: String) extends ClusterCommand[K, V]
+                                keyInMeta: Tuple2[K, String],
+                                lastChangeVersion: String,
+                                responseTopic: String
+                               ) extends ClusterCommand[K, V]
   case class MetaCommand[K](override val id: String,
                                metaId: String,
                                commands: Seq[Commands.Command[K, KeyIndexContext]],

@@ -12,4 +12,7 @@ object TestConfig {
   val RESPONSE_TOPIC = "responses"
   val N_PARTITIONS = 3
 
+  val TX_VERSION = "v1"
+
+  //val CLIENT_TOPIC = "client"
 }

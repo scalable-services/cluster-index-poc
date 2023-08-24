@@ -22,7 +22,7 @@ class RangeIndex[K, V](var meta: RangeIndexMeta)(implicit val builder: RangeBuil
     Tuple3(key, value, p.version)
   }
 
-  def insert(data: Seq[(K, V, Boolean)], version: String): InsertionResult = {
+  private def insert(data: Seq[(K, V, Boolean)], version: String): InsertionResult = {
     if (isFull()) return InsertionResult(false, 0, Some(Errors.LEAF_BLOCK_FULL))
 
     val n = Math.min(meta.mAX - tuples.length, data.length)
@@ -44,7 +44,7 @@ class RangeIndex[K, V](var meta: RangeIndexMeta)(implicit val builder: RangeBuil
     InsertionResult(true, len, None)
   }
 
-  def update(data: Seq[Tuple3[K, V, Option[String]]], version: String):UpdateResult = {
+  private def update(data: Seq[Tuple3[K, V, Option[String]]], version: String): UpdateResult = {
     if (data.exists { case (k, _, _) => !tuples.exists { case (k1, _, _) => ordering.equiv(k1, k) } }) {
       return UpdateResult(false, 0, Some(Errors.LEAF_KEY_NOT_FOUND(data.map(_._1), kts)))
     }
@@ -63,7 +63,7 @@ class RangeIndex[K, V](var meta: RangeIndexMeta)(implicit val builder: RangeBuil
     UpdateResult(true, data.length, None)
   }
 
-  def remove(keys: Seq[Tuple2[K, Option[String]]]): RemovalResult = {
+  private def remove(keys: Seq[Tuple2[K, Option[String]]]): RemovalResult = {
     if (keys.exists { case (k, _) => !tuples.exists { case (k1, _, _) => ordering.equiv(k1, k) } }) {
       return RemovalResult(false, 0, Some(Errors.LEAF_KEY_NOT_FOUND[K](keys.map(_._1), kts)))
     }
@@ -80,7 +80,7 @@ class RangeIndex[K, V](var meta: RangeIndexMeta)(implicit val builder: RangeBuil
     RemovalResult(true, keys.length, None)
   }
 
-  def execute(cmds: Seq[Command[K, V]], version: String = ctxId): BatchResult = {
+  def execute(cmds: Seq[Command[K, V]], version: String): (BatchResult, Boolean) = {
     val maxBefore: Option[K] = if(isEmpty()) None else Some(max._1)
 
     for(i<-0 until cmds.length){
@@ -90,18 +90,25 @@ class RangeIndex[K, V](var meta: RangeIndexMeta)(implicit val builder: RangeBuil
         case cmd: Remove[K, V] => remove(cmd.keys)
       }
 
-      if(!r.success) return BatchResult(false, r.error)
+      if(!r.success) return BatchResult(false, r.error) -> false
+    }
+
+    if(isEmpty()) {
+      meta = meta.withLastChangeVersion(UUID.randomUUID.toString)
+      return BatchResult(true) -> true
     }
 
     // Change last version if max has changed...
-    val maxNow: Option[K] = if(isEmpty()) None else Some(max._1)
+    val maxNow: Option[K] = Some(max._1)
 
-    if(maxBefore != maxNow){
+    if(maxBefore.isEmpty || !builder.ordering.equiv(maxBefore.get, maxNow.get)){
       println(s"${Console.YELLOW_B}changed version for range ${meta.id}...${Console.RESET}")
       meta = meta.withLastChangeVersion(UUID.randomUUID.toString)
+
+      return BatchResult(true) -> true
     }
 
-    BatchResult(true)
+    BatchResult(true) -> false
   }
 
   def isFull(): Boolean = {
@@ -139,7 +146,7 @@ class RangeIndex[K, V](var meta: RangeIndexMeta)(implicit val builder: RangeBuil
   def copy(sameId: Boolean = false): RangeIndex[K, V] = {
     val rcrange = RangeIndexMeta()
       .withId(if(sameId) meta.id else UUID.randomUUID.toString)
-      .withLastChangeVersion(UUID.randomUUID.toString)
+      .withLastChangeVersion(if(sameId) meta.lastChangeVersion else UUID.randomUUID.toString)
       .withOrder(meta.order)
       .withMIN(meta.mIN)
       .withMAX(meta.mAX)
@@ -158,7 +165,6 @@ class RangeIndex[K, V](var meta: RangeIndexMeta)(implicit val builder: RangeBuil
 
     println(s"${Console.YELLOW_B}changed version for range ${meta.id}...${Console.RESET}")
 
-    // Change last change version...
     meta = meta.withLastChangeVersion(UUID.randomUUID.toString)
 
     val rcrange = RangeIndexMeta()

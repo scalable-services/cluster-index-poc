@@ -87,7 +87,7 @@ class RangeIndexSpec extends Repeatable with Matchers {
     }
 
     val insertCommand = insert()
-    val executionResult = left.execute(Seq(insertCommand))
+    val (executionResult, hasChanged) = left.execute(Seq(insertCommand), left.meta.id)
 
     if(executionResult.error.isDefined){
       throw executionResult.error.get

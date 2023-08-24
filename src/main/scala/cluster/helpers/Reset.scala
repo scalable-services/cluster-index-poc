@@ -6,6 +6,11 @@ import scala.jdk.CollectionConverters.{CollectionHasAsScala, SeqHasAsJava}
 
 object Reset {
 
+  val config = new java.util.Properties()
+  config.put(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092")
+
+  val admin = AdminClient.create(config)
+
   def main(args: Array[String]): Unit = {
 
     val session = TestHelper.getSession()
@@ -17,19 +22,12 @@ object Reset {
 
     session.close()
 
-    val config = new java.util.Properties()
-    config.put(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9092")
-
-    val admin = AdminClient.create(config)
-
     var topics = Seq(TestConfig.META_INDEX_TOPIC)
 
     for (i <- 0 until TestConfig.N_PARTITIONS) {
       topics :+= s"${TestConfig.RANGE_INDEX_TOPIC}-$i"
       topics :+= s"${TestConfig.RESPONSE_TOPIC}-$i"
     }
-
-    topics :+= TestConfig.META_INDEX_TOPIC
 
     val existingTopics = admin.listTopics().names().get().asScala.toSeq
     val deleteTopics = existingTopics.filter{t => topics.exists(_ == t)}
