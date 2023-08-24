@@ -214,8 +214,9 @@ class ClusterIndexSpec extends Repeatable with Matchers {
     compare()
 
     commands = Seq.empty[Commands.Command[K, V]]
+    excludeInsertions = Seq.empty[(K, V, String)]
 
-    for (i <- 0 until 10) {
+    for (i <- 0 until 20) {
       commands = commands ++ (rand.nextInt(1, 4) match {
         case 1 =>
           val insertions = insert()
