@@ -41,7 +41,7 @@ class ClusterClient[K, V](val metaCtx: IndexContext)(implicit val metaBuilder: I
   val kafkaProducer = producerSettings.createKafkaProducer()
   val settingsWithProducer = producerSettings.withProducer(kafkaProducer)
 
-  val rangeTasks = TrieMap.empty[String, (RangeCommand[K, V], Promise[Boolean])]
+  val rangeTasks = TrieMap.empty[String, (RangeCommand[K, V], Promise[RangeTaskResponse])]
 
    def normalize(commands: Seq[Commands.Command[K, V]], version: Option[String]): Seq[Commands.Command[K, V]] = {
     commands.groupBy(_.indexId).map { case (indexId, cmds) =>
@@ -97,7 +97,7 @@ class ClusterClient[K, V](val metaCtx: IndexContext)(implicit val metaBuilder: I
     }
 
     val futures = tasks.map { t =>
-      val promise = Promise[Boolean]()
+      val promise = Promise[RangeTaskResponse]()
       rangeTasks.put(t.id, t -> promise)
       promise.future.map{t -> _}
     }
@@ -106,10 +106,17 @@ class ClusterClient[K, V](val metaCtx: IndexContext)(implicit val metaBuilder: I
       .runWith(Producer.plainSink(settingsWithProducer))
       .flatMap(_ => Future.sequence(futures))
       .flatMap {
-        case results if results.forall(_._2 == true) => Future.successful(true)
+        case responses if responses.exists(_._2.hasRootChanged) => TestHelper.loadIndex(metaCtx.id).map(_.get).map { ctx =>
+          meta = new QueryableIndex[K, KeyIndexContext](ctx)(metaBuilder)
+          responses
+        }
+        case responses => Future.successful(responses)
+      }
+      .flatMap {
+        case results if results.forall(_._2.ok == true) => Future.successful(true)
         case results =>
-          val succeed = results.filter(_._2).map(_._1)
-          val notSucceed = results.filterNot(_._2).map(_._1)
+          val succeed = results.filter(_._2.ok).map(_._1)
+          val notSucceed = results.filterNot(_._2.ok).map(_._1)
 
           println(s"${Console.YELLOW_B} TRYING COMMANDS AGAIN... SUCCEED: ${succeed.length} not succeed: ${notSucceed.length} ${Console.RESET}")
 
@@ -125,7 +132,7 @@ class ClusterClient[K, V](val metaCtx: IndexContext)(implicit val metaBuilder: I
       }
   }
 
-  val meta = new QueryableIndex[K, KeyIndexContext](metaCtx)(metaBuilder)
+  var meta = new QueryableIndex[K, KeyIndexContext](metaCtx)(metaBuilder)
 
   def findRange(k: K): Future[Option[(K, KeyIndexContext, String)]] = {
     meta.findPath(k).map {
@@ -282,7 +289,7 @@ class ClusterClient[K, V](val metaCtx: IndexContext)(implicit val metaBuilder: I
 
         println(s"client ${client_uuid} receiving ${r.id} ok: ${r.ok}")
 
-        rangeTasks.remove(r.id).map(_._2.success(r.ok))
+        rangeTasks.remove(r.id).map(_._2.success(r))
 
         Future.successful(HelloReply(r.id, r.ok))
       }

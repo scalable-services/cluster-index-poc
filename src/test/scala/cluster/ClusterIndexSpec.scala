@@ -165,6 +165,15 @@ class ClusterIndexSpec extends Repeatable with Matchers {
 
     val groupedNewInsertions = list.grouped(nGroups).toSeq
 
+    var pool = Seq.empty[ClusterClient[K, V]]
+
+    for(i<-0 until 10){
+      val client = new ClusterClient[K, V](ctx)(clusterMetaBuilder, session, Serializers.grpcRangeCommandSerializer)
+      pool = pool :+ client
+    }
+
+    Await.result(Future.sequence(pool.map(_.start())), Duration.Inf)
+
     for(i<-0 until grouped.length){
 
       val groupedInsertion = groupedNewInsertions(i)
@@ -195,14 +204,10 @@ class ClusterIndexSpec extends Repeatable with Matchers {
       data = data ++ groupedInsertion
 
       val cmds: Seq[Commands.Command[K, V]] = Seq(update, removal, insert)
+      val client = pool(rand.nextInt(0, pool.length))
 
-      tasks = tasks :+ TestHelper.loadIndex(metaContext.id).map(_.get).flatMap { ctx =>
-        val client = new ClusterClient[K, V](ctx)(clusterMetaBuilder, session, Serializers.grpcRangeCommandSerializer)
-        client.start().map(_ => client)
-      }.flatMap { client =>
-        client.execute(cmds).map(client -> _)
-      }.flatMap { case (client, mcmds) =>
-        client.sendTasks(mcmds.values.toSeq)/*.flatMap(_ => client.close())*/
+      tasks = tasks :+ client.execute(cmds).flatMap { mcmds =>
+        client.sendTasks(mcmds.values.toSeq)
       }
     }
 
@@ -225,7 +230,7 @@ class ClusterIndexSpec extends Repeatable with Matchers {
 
     compare()
 
-    Await.result(storage.close(), Duration.Inf)
+    Await.result(Future.sequence(pool.map(_.close())).flatMap(_ => storage.close()), Duration.Inf)
     session.close()
   }
 

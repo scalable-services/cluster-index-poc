@@ -105,11 +105,11 @@ class RangeWorker[K, V](val id: String, intid: Int)(implicit val rangeBuilder: R
       println()
     }
 
-    def checkAfterExecution(cindex: ClusterIndex[K, V], previousMax: (K, Option[String])): Future[Boolean] = {
+    def checkAfterExecution(cindex: ClusterIndex[K, V], previousMax: (K, Option[String])): Future[(Boolean, Boolean)] = {
 
       val range = cindex.ranges(task.rangeId)
 
-      def removeFromMeta(): Future[Boolean] = {
+      def removeFromMeta(): Future[(Boolean, Boolean)] = {
         val metaTask = MetaCommand[K](
           UUID.randomUUID.toString,
           task.indexId,
@@ -122,10 +122,10 @@ class RangeWorker[K, V](val id: String, intid: Int)(implicit val rangeBuilder: R
 
         println(s"${Console.RED_B}SENDING REMOVING TASK ${task.id} TO META FOR RANGE ID ${task.rangeId} REMOVE KEYS: ${previousMax}... ${Console.RESET}")
 
-        sendMetaTask(metaTask)
+        sendMetaTask(metaTask).map(_ -> true)
       }
 
-      def updateOrRemove(): Future[Boolean] = {
+      def updateOrRemove(): Future[(Boolean, Boolean)] = {
         val createdRanges = cindex.ranges.size > 1
         val currentMax = range.max._1
         val maxChanged = !rangeBuilder.ordering.equiv(previousMax._1, currentMax)
@@ -151,12 +151,12 @@ class RangeWorker[K, V](val id: String, intid: Int)(implicit val rangeBuilder: R
 
           println(s"${Console.MAGENTA_B}SENDING UPDATE/INSERT META TASK ${task.id} WITH REMOVE SET: ${previousMax} AND INSERT SET: ${metaAfter.map(_._1)}${Console.RESET}")
 
-          return sendMetaTask(metaTask)
+          return sendMetaTask(metaTask).map(_ -> true)
         }
 
         println(s"${Console.GREEN_B}NORMAL OPERATIONS FOR ${task.id}...${Console.RESET}")
 
-        Future.successful(true)
+        Future.successful(true -> false)
       }
 
       if (range.isEmpty()) {
@@ -166,7 +166,7 @@ class RangeWorker[K, V](val id: String, intid: Int)(implicit val rangeBuilder: R
       updateOrRemove()
     }
 
-    def execute(cindex: ClusterIndex[K, V]): Future[Boolean] = {
+    def execute(cindex: ClusterIndex[K, V]): Future[(Boolean, Boolean)] = {
       val previousMax = rangeBuilder.ks.deserialize(task.keyInMeta.key.toByteArray)
 
       cindex.execute(commands, version).map { br =>
@@ -208,13 +208,13 @@ class RangeWorker[K, V](val id: String, intid: Int)(implicit val rangeBuilder: R
         // Retry on client side...
         //sendResponse(RangeTaskResponse(task.id, task.responseTopic, false))
 
-        client.respond(RangeTaskResponse(task.id, task.responseTopic, false)).map(_.ok)
+        client.respond(RangeTaskResponse(task.id, task.responseTopic, false, false)).map(_.ok)
       } else {
         ClusterIndex.fromRangeIndexId[K, V](task.rangeId, TestConfig.MAX_RANGE_ITEMS)
           .flatMap(execute)
-          .flatMap { res =>
+          .flatMap { case (res, changed) =>
             //sendResponse(RangeTaskResponse(task.id, task.responseTopic, true))
-            client.respond(RangeTaskResponse(task.id, task.responseTopic, true)).map(_.ok)
+            client.respond(RangeTaskResponse(task.id, task.responseTopic, true, changed)).map(_.ok)
           }
       }
     }.flatMap(_ => client.close().map(_ => true))
