@@ -133,7 +133,7 @@ class ClusterIndexSpec extends Repeatable with Matchers {
 
     val cindex = new ClusterIndex[K, V](metaContext, TestConfig.MAX_RANGE_ITEMS)(rangeBuilder, clusterMetaBuilder)
 
-    var commands: Seq[Commands.Command[K, V]] = insert()
+    var commands: Seq[Commands.Command[K, V]] = insert(1000, 2000)
     val ctx = Await.result(cindex.execute(commands, version).flatMap(_ => cindex.save()), Duration.Inf)
 
     var dataSorted = data.sortBy(_._1).toList
@@ -144,58 +144,72 @@ class ClusterIndexSpec extends Repeatable with Matchers {
 
     assert(rangeData.map{case (k, v, _) => k -> v} == dataSorted.map{case (k, v, _) => k -> v})
 
-    data = rangeData
-
-    val n = 10
+    val nGroups = 50
 
     commands = Seq.empty[Commands.Command[K, V]]
+    val grouped = data.grouped(nGroups).toSeq
 
-    for(i<-0 until n){
-      commands = commands ++ (rand.nextInt(1, 4) match {
-        case 1 =>
-          val insertions = insert()
+    var tasks = Seq.empty[Future[Boolean]]
 
-          excludeInsertions = excludeInsertions ++ insertions.map(_.list).flatten.map { case (k, v, _) => (k, v, version) }
+    var list = Seq.empty[(K, V, String)]
+    //var list = Seq.empty[(K, V, String)]
 
-          insertions
-        case 2 => update()
-        case 3 => remove()
-      })
+    for(i<-0 until rand.nextInt(10000, 13400)){
+      val k = RandomStringUtils.randomAlphanumeric(6)
+      val v = RandomStringUtils.randomAlphanumeric(6)
+
+      if(!list.exists{case (k1, _, _) => ordering.equiv(k, k1)} && !data.exists{case (k1, _, _) => ordering.equiv(k, k1)}){
+        list = list :+ (k, v, version)
+      }
     }
 
-    /*val updateCommands = update()
-    val removalCommands = remove()
-    val insertCommands = insert()
+    val groupedNewInsertions = list.grouped(nGroups).toSeq
 
-    commands = updateCommands ++ removalCommands ++ insertCommands*/
+    for(i<-0 until grouped.length){
 
-    /*val metaContext2 = Await.result(TestHelper.loadIndex(metaContext.id), Duration.Inf).get
-    val cindex2 = new ClusterIndex[K, V](metaContext2, TestConfig.MAX_RANGE_ITEMS)(rangeBuilder, clusterMetaBuilder)
+      val groupedInsertion = groupedNewInsertions(i)
+      val groupData = grouped(i)
+      val groupedOps = groupData.grouped(2).toSeq
 
-    val br2 = Await.result(cindex2.execute(commands, version).flatMap(_ => cindex2.save()), Duration.Inf)
+      val updates = groupedOps(0).map { case (k, v, vs) =>
+        Tuple3(k, RandomStringUtils.randomAlphanumeric(6), Some(vs))
+      }
 
-    dataSorted = data.sortBy(_._1).toList
-    rangeData = cindex2.inOrder().toList
+      val removals = groupedOps(1).map{case (k, v, vs) => (k, Some(vs))}
 
-    println(s"${Console.GREEN_B}ref data: ${dataSorted.map { case (k, v, _) => k -> v }}${Console.RESET}")
-    println(s"${Console.YELLOW_B}range data: ${rangeData.map { case (k, v, _) => k -> v }}${Console.RESET}")
+      val insert = Commands.Insert[K, V](metaContext.id, groupedInsertion.map{case (k, v, _) => (k, v, false)},
+        Some(version))
+      val update = Commands.Update[K, V](metaContext.id, updates, Some(version))
+      val removal = Commands.Remove[K, V](metaContext.id, removals, Some(version))
 
-    assert(rangeData.map{case (k, v, _) => k -> v} == dataSorted.map{case (k, v, _) => k -> v})*/
+      data = data.filterNot { case (k, _, _) =>
+        updates.exists{case (k1, _, _) => ordering.equiv(k, k1)}
+      }
 
-    val client = new ClusterClient[K, V](ctx)(clusterMetaBuilder, session, Serializers.grpcRangeCommandSerializer)
-    Await.result(client.start(), Duration.Inf)
+      data = data ++ updates.map{case (k, v, vs) => (k, v, version)}
 
-    //commands = client.normalize(commands, Some(version))
+      data = data.filterNot { case (k, _, _) =>
+        removals.exists { case (k1, _) => ordering.equiv(k, k1) }
+      }
 
-    assert(commands.forall(x => x.version.isDefined && x.version.get == TestConfig.TX_VERSION))
-    assert(data.forall(x => x._3 == TestConfig.TX_VERSION))
+      data = data ++ groupedInsertion
+
+      val cmds: Seq[Commands.Command[K, V]] = Seq(update, removal, insert)
+
+      tasks = tasks :+ TestHelper.loadIndex(metaContext.id).map(_.get).flatMap { ctx =>
+        val client = new ClusterClient[K, V](ctx)(clusterMetaBuilder, session, Serializers.grpcRangeCommandSerializer)
+        client.start().map(_ => client)
+      }.flatMap { client =>
+        client.execute(cmds).map(client -> _)
+      }.flatMap { case (client, mcmds) =>
+        client.sendTasks(mcmds.values.toSeq)/*.flatMap(_ => client.close())*/
+      }
+    }
+
+    println("result tasks: ", Await.result(Future.sequence(tasks), Duration.Inf))
 
     val listIndex = data.sortBy(_._1)
     println(s"${Console.YELLOW_B}listindex after range cmds inserted: ${TestHelper.saveListIndex(indexId, listIndex, storage.session, rangeBuilder.ks, rangeBuilder.vs)}${Console.RESET}")
-
-    var response = Await.result(client.execute(commands).flatMap { cmds =>
-      client.sendTasks(cmds.values.toSeq)
-    }, Duration.Inf)
 
     def compare(): Unit = {
       val indexDataFromDisk = LoadIndexDemo.loadAll().toList
@@ -209,44 +223,9 @@ class ClusterIndexSpec extends Repeatable with Matchers {
       println("diff: ", listDataFromDisk.diff(indexDataFromDisk))
     }
 
-    println(s"sent tasks 1: ${response}")
-
     compare()
 
-    commands = Seq.empty[Commands.Command[K, V]]
-    excludeInsertions = Seq.empty[(K, V, String)]
-
-    for (i <- 0 until 20) {
-      commands = commands ++ (rand.nextInt(1, 4) match {
-        case 1 =>
-          val insertions = insert()
-
-          excludeInsertions = excludeInsertions ++ insertions.map(_.list).flatten.map{case (k, v, _) => (k, v, version)}
-
-          insertions
-        case 2 => update()
-        case 3 => remove()
-      })
-    }
-
-    val listIndex2 = data.sortBy(_._1)
-    println(s"${Console.YELLOW_B}listindex2 after range cmds inserted: ${TestHelper.saveListIndex(indexId, listIndex2, storage.session, rangeBuilder.ks, rangeBuilder.vs)}${Console.RESET}")
-
-    //val ctx2 = Await.result(TestHelper.loadIndex(ctx.id), Duration.Inf).get
-    val client2 = new ClusterClient[K, V](ctx)(clusterMetaBuilder, session, Serializers.grpcRangeCommandSerializer)
-    Await.result(client2.start(), Duration.Inf)
-
-    //commands = client2.normalize(commands, Some(version))
-
-    response = Await.result(client2.execute(commands).flatMap { cmds =>
-      client2.sendTasks(cmds.values.toSeq).flatMap(res => client2.close().map(_ => res))
-    }, Duration.Inf)
-
-    compare()
-
-    Await.result(Future.sequence(Seq(
-      client.close()
-    )).flatMap(_ => storage.close()), Duration.Inf)
+    Await.result(storage.close(), Duration.Inf)
     session.close()
   }
 
