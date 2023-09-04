@@ -1,203 +1,105 @@
 package cluster
 
-import cluster.grpc.RangeIndexMeta
 import cluster.helpers.TestHelper
-import com.google.protobuf.ByteString
-import services.scalable.index.Commands.{Command, Insert, Remove, Update}
-import services.scalable.index.grpc.KVPair
-import services.scalable.index.{BatchResult, Errors, InsertionResult, RemovalResult, UpdateResult}
+import services.scalable.index.Commands.Command
+import services.scalable.index.grpc.IndexContext
+import services.scalable.index.{BatchResult, IndexBuilder, QueryableIndex}
 
 import java.util.UUID
-import scala.concurrent.Future
+import scala.concurrent.duration.Duration
+import scala.concurrent.{Await, Future}
 
-class RangeIndex[K, V](var meta: RangeIndexMeta)(implicit val builder: RangeBuilder[K, V]) {
+class RangeIndex[K, V](protected val meta: IndexContext)(implicit val builder: IndexBuilder[K, V]) {
   import builder._
 
-  val ctxId = UUID.randomUUID.toString
+  var index: QueryableIndex[K, V] = new QueryableIndex[K, V](meta)(builder)
+  
+  def execute(cmds: Seq[Command[K, V]], version: String): Future[(BatchResult, Boolean)] = {
+    index.max().flatMap { maxBOpt =>
+      val maxBefore = maxBOpt.map(_._1)
 
-  var tuples = meta.data.map { p =>
-    val key = ks.deserialize(p.key.toByteArray)
-    val value = vs.deserialize(p.value.toByteArray)
+      index.execute(cmds, version).flatMap { br =>
 
-    Tuple3(key, value, p.version)
-  }
+        assert(br.success, br.error)
 
-  private def insert(data: Seq[(K, V, Boolean)], version: String): InsertionResult = {
-    if (isFull()) return InsertionResult(false, 0, Some(Errors.LEAF_BLOCK_FULL))
+        index.max().map { maxAOpt =>
+          val maxAfter = maxAOpt.map(_._1)
 
-    val n = Math.min(meta.mAX - tuples.length, data.length)
-    val slice = data.slice(0, n)
+          var changed = false
 
-    val len = slice.length
+          if(maxAfter.map(k => maxBefore.map(k1 => builder.ord.equiv(k, k1))).exists(x => x.isDefined && !x.get)){
+            changed = true
+            println(s"${Console.YELLOW_B}changed version for range ${meta.id}...${Console.RESET}")
+            index.ctx.lastChangeVersion = UUID.randomUUID.toString
+          }
 
-    if (slice.exists { case (k, _, upsert) => tuples.exists { case (k1, _, _) => !upsert && ordering.equiv(k1, k) } }) {
-      return InsertionResult(false, 0, Some(Errors.LEAF_DUPLICATE_KEY(slice.map(_._1), kts)))
-    }
-
-    // Filter out upsert keys...
-    val upserts = slice.filter(_._3)
-    tuples = tuples.filterNot { case (k, v, _) => upserts.exists { case (k1, _, _) => ordering.equiv(k, k1) } }
-
-    // Add back the upsert keys and the new ones...
-    tuples = (tuples ++ slice.map { case (k, v, _) => Tuple3(k, v, version) }).sortBy(_._1)
-
-    InsertionResult(true, len, None)
-  }
-
-  private def update(data: Seq[Tuple3[K, V, Option[String]]], version: String): UpdateResult = {
-    if (data.exists { case (k, _, _) => !tuples.exists { case (k1, _, _) => ordering.equiv(k1, k) } }) {
-      return UpdateResult(false, 0, Some(Errors.LEAF_KEY_NOT_FOUND(data.map(_._1), kts)))
-    }
-
-    val versionsChanged = data.filter(_._3.isDefined)
-      .filter { case (k0, _, vs0) => tuples.exists { case (k1, _, vs1) => ordering.equiv(k0, k1) && !vs0.get.equals(vs1) } }
-
-    if (!versionsChanged.isEmpty) {
-      return UpdateResult(false, 0, Some(Errors.VERSION_CHANGED(versionsChanged.map { case (k, _, vs) => k -> vs }, kts)))
-    }
-
-    val notin = tuples.filterNot { case (k1, _, _) => data.exists { case (k, _, _) => ordering.equiv(k, k1) } }
-
-    tuples = (notin ++ data.map { case (k, v, _) => Tuple3(k, v, version) }).sortBy(_._1)
-
-    UpdateResult(true, data.length, None)
-  }
-
-  private def remove(keys: Seq[Tuple2[K, Option[String]]]): RemovalResult = {
-    if (keys.exists { case (k, _) => !tuples.exists { case (k1, _, _) => ordering.equiv(k1, k) } }) {
-      return RemovalResult(false, 0, Some(Errors.LEAF_KEY_NOT_FOUND[K](keys.map(_._1), kts)))
-    }
-
-    val versionsChanged = keys.filter(_._2.isDefined)
-      .filter { case (k0, vs0) => tuples.exists { case (k1, _, vs1) => ordering.equiv(k0, k1) && !vs0.get.equals(vs1) } }
-
-    if (!versionsChanged.isEmpty) {
-      return RemovalResult(false, 0, Some(Errors.VERSION_CHANGED(versionsChanged, kts)))
-    }
-
-    tuples = tuples.filterNot { case (k, _, _) => keys.exists { case (k1, _) => ordering.equiv(k, k1) } }
-
-    RemovalResult(true, keys.length, None)
-  }
-
-  def execute(cmds: Seq[Command[K, V]], version: String): (BatchResult, Boolean) = {
-    val maxBefore: Option[K] = if(isEmpty()) None else Some(max._1)
-
-    for(i<-0 until cmds.length){
-      val r = cmds(i) match {
-        case cmd: Insert[K, V] => insert(cmd.list, version)
-        case cmd: Update[K, V] => update(cmd.list, version)
-        case cmd: Remove[K, V] => remove(cmd.keys)
+          br -> changed
+        }
       }
-
-      if(!r.success) return BatchResult(false, r.error) -> false
     }
-
-    if(isEmpty()) {
-      meta = meta.withLastChangeVersion(UUID.randomUUID.toString)
-      return BatchResult(true) -> true
-    }
-
-    // Change last version if max has changed...
-    val maxNow: Option[K] = Some(max._1)
-
-    if(maxBefore.isEmpty || !builder.ordering.equiv(maxBefore.get, maxNow.get)){
-      println(s"${Console.YELLOW_B}changed version for range ${meta.id}...${Console.RESET}")
-      meta = meta.withLastChangeVersion(UUID.randomUUID.toString)
-
-      return BatchResult(true) -> true
-    }
-
-    BatchResult(true) -> false
   }
 
   def isFull(): Boolean = {
-    tuples.length == meta.mAX
+    index.ctx.num_elements >= meta.maxNItems
   }
 
   def isEmpty(): Boolean = {
-    tuples.isEmpty
+    index.isEmpty()
   }
 
-  def length = tuples.length
+  def length = index.ctx.num_elements
 
-  def min = tuples.minBy(_._1)
-  def max = tuples.maxBy(_._1)
+  def min = index.min().map(_.map(_._1))
+  def max = index.max().map(_.map(_._1))
 
-  def inOrder(): Seq[(K, V, String)] = tuples
+  def inOrder(): Seq[(K, V, String)] = Await.result(TestHelper.all(index.inOrder()), Duration.Inf)
 
-  def toStringAll(): Seq[(String, String, String)] = {
-    tuples.map { case (k, v, version) =>
-      Tuple3(kts(k), vts(v), version)
+  def serialize(): IndexContext = {
+    index.snapshot()
+  }
+
+  /*
+   * TODO: change this
+   */
+  def copy(sameId: Boolean = false): RangeIndex[K, V] = {
+    val copy = index.copy(sameId)
+
+    val ri = new RangeIndex[K, V](copy.ctx.currentSnapshot())(builder)
+    ri.index = copy
+
+    ri
+  }
+
+  def split(): Future[RangeIndex[K, V]] = {
+    index.split().map { right =>
+
+      //index.ctx.lastChangeVersion = UUID.randomUUID.toString
+      println(s"${Console.YELLOW_B}changed version for range ${meta.id}...${Console.RESET}")
+
+      val ri = new RangeIndex[K, V](right.currentSnapshot())(right.builder)
+      ri.index = right
+
+      ri
     }
   }
 
-  def serialize(): RangeIndexMeta = {
-    meta
-      .withData(
-        tuples.map { case (k, v, version) =>
-          val kserial = ks.serialize(k)
-          val vserial = vs.serialize(v)
-          KVPair(ByteString.copyFrom(kserial), ByteString.copyFrom(vserial), version)
-        }
-      )
-  }
-
-  def copy(sameId: Boolean = false): RangeIndex[K, V] = {
-    val rcrange = RangeIndexMeta()
-      .withId(if(sameId) meta.id else UUID.randomUUID.toString)
-      .withLastChangeVersion(if(sameId) meta.lastChangeVersion else UUID.randomUUID.toString)
-      .withOrder(meta.order)
-      .withMIN(meta.mIN)
-      .withMAX(meta.mAX)
-
-    val copy = new RangeIndex[K, V](rcrange)
-
-    copy.tuples = tuples
-    copy
-  }
-
-  def split(): RangeIndex[K, V] = {
-    val leftTuples = tuples.slice(0, tuples.length/2)
-    val rightTuples = tuples.slice(tuples.length/2, tuples.length)
-
-    tuples = leftTuples
-
-    println(s"${Console.YELLOW_B}changed version for range ${meta.id}...${Console.RESET}")
-
-    meta = meta.withLastChangeVersion(UUID.randomUUID.toString)
-
-    val rcrange = RangeIndexMeta()
-      .withId(UUID.randomUUID.toString)
-      .withOrder(meta.order)
-      .withMIN(meta.mIN)
-      .withMAX(meta.mAX)
-      .withLastChangeVersion(UUID.randomUUID.toString)
-
-    val right = new RangeIndex[K, V](rcrange)
-    right.tuples = rightTuples
-
-    right
-  }
-
-  def save(): Future[Boolean] = {
-    meta = serialize()
-    TestHelper.saveRange(meta)
+  def save(): Future[IndexContext] = {
+    index.save()
   }
 
 }
 
 object RangeIndex {
-  def fromCtx[K, V](ctx: RangeIndexMeta)(implicit builder: RangeBuilder[K, V]): RangeIndex[K, V] = {
+  def fromCtx[K, V](ctx: IndexContext)(implicit builder: IndexBuilder[K, V]): RangeIndex[K, V] = {
     new RangeIndex[K, V](ctx)(builder)
   }
 
-  def fromId[K, V](id: String)(implicit builder: RangeBuilder[K, V]): Future[RangeIndex[K, V]] = {
+  def fromId[K, V](id: String)(implicit builder: IndexBuilder[K, V]): Future[RangeIndex[K, V]] = {
     import builder._
 
     for {
-      ctx <- TestHelper.getRange(id).map(_.get)
-      index = new RangeIndex[K, V](ctx)
+      ctx <- builder.storage.loadIndex(id).map(_.get)
+      index = new RangeIndex[K, V](ctx)(builder)
     } yield {
       index
     }

@@ -37,17 +37,15 @@ object LoadIndexDemo {
   def loadAll(): Seq[(K, V)] = {
     val metaContext = Await.result(TestHelper.loadIndex(indexId), Duration.Inf).get
 
-    val rangeBuilder = RangeBuilder[K, V](ORDER = TestConfig.MAX_RANGE_ITEMS)(
+    val rangeBuilder = IndexBuilder.create[K, V](
       DefaultComparators.ordString,
-      session,
-      global,
       DefaultSerializers.stringSerializer,
-      DefaultSerializers.stringSerializer,
-      k => k,
-      v => v,
-      Serializers.grpcRangeCommandSerializer,
-      Serializers.grpcMetaCommandSerializer
+      DefaultSerializers.stringSerializer
     )
+
+    rangeBuilder.storage(storage)
+    rangeBuilder.cache(cache)
+    rangeBuilder.serializer(Serializers.grpcStringStringSerializer)
 
     val clusterMetaBuilder = IndexBuilder.create[K, KeyIndexContext](DefaultComparators.ordString,
       DefaultSerializers.stringSerializer, Serializers.keyIndexSerializer)

@@ -1,6 +1,5 @@
 package cluster
 
-import cluster.ClusterCommands.RangeCommand
 import cluster.grpc.KeyIndexContext
 import cluster.helpers.{TestConfig, TestHelper}
 import org.apache.commons.lang3.RandomStringUtils
@@ -11,11 +10,11 @@ import services.scalable.index.impl.{CassandraStorage, DefaultCache}
 import services.scalable.index.{Commands, DefaultComparators, DefaultIdGenerators, DefaultSerializers, IndexBuilder}
 
 import java.util.concurrent.ThreadLocalRandom
-import scala.concurrent.{Await, Future}
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.duration.Duration
+import scala.concurrent.{Await, Future}
 
-class ClusterIndexSpec extends Repeatable with Matchers {
+class ClusterIndexSpec3 extends Repeatable with Matchers {
 
   override val times: Int = 1
 
@@ -35,7 +34,7 @@ class ClusterIndexSpec extends Repeatable with Matchers {
 
     val version = TestConfig.TX_VERSION//UUID.randomUUID.toString
 
-    val order = 64//rand.nextInt(4, 1000)
+    val order = rand.nextInt(4, 1000)
     val min = order / 2
     val max = order
 
@@ -142,59 +141,33 @@ class ClusterIndexSpec extends Repeatable with Matchers {
 
     assert(rangeData.map{case (k, v, _) => k -> v} == dataSorted.map{case (k, v, _) => k -> v})
 
-    val nGroups = 50
-
     commands = Seq.empty[Commands.Command[K, V]]
-    //val grouped = data.grouped(nGroups).toSeq
+    excludeInsertions = Seq.empty[(K, V, String)]
 
-    var tasks = Seq.empty[Future[Boolean]]
+    val n = 10
 
-    var list = Seq.empty[(K, V, String)]
-    //var list = Seq.empty[(K, V, String)]
+    for (i <- 0 until n) {
+      commands ++= (rand.nextInt(1, 4) match {
+        case 1 if data.length > 0 => update()
+        case 2 if data.length > 0 => remove()
+        case _ =>
+          val c = insert()
+          excludeInsertions ++= c.head.list.map{case (k, v, _) => (k, v, version)}
+          c
+      })
 
-    for(i<-0 until rand.nextInt(1000, 1110)){
-      val k = RandomStringUtils.randomAlphanumeric(6)
-      val v = RandomStringUtils.randomAlphanumeric(6)
-
-      if(!list.exists{case (k1, _, _) => ordering.equiv(k, k1)} && !data.exists{case (k1, _, _) => ordering.equiv(k, k1)}){
-        list = list :+ (k, v, version)
-      }
+     // commands ++= insert(1, 2)
     }
-
-    val groupedNewInsertions = list.grouped(nGroups).toSeq
-
-    var pool = Seq.empty[ClusterClient[K, V]]
-
-    for(i<-0 until 10){
-      val client = new ClusterClient[K, V](ctx)(clusterMetaBuilder, session, Serializers.grpcRangeCommandSerializer)
-      pool = pool :+ client
-    }
-
-    Await.result(Future.sequence(pool.map(_.start())), Duration.Inf)
-
-    val gnil = groupedNewInsertions.length
-
-    for(i<-0 until groupedNewInsertions.length){
-
-      val groupedInsertion = groupedNewInsertions(i)
-
-      val insert = Seq(Commands.Insert[K, V](metaContext.id, groupedInsertion.map{case (k, v, _) => (k, v, false)},
-        Some(version)))
-
-      data = data ++ groupedInsertion
-
-      val cmds: Seq[Commands.Command[K, V]] = insert
-      val client = pool(rand.nextInt(0, pool.length))
-
-      tasks = tasks :+ client.execute(cmds).flatMap { mcmds =>
-        client.sendTasks(mcmds.values.toSeq)
-      }
-    }
-
-    println(s"result of ${tasks.length} tasks: ", Await.result(Future.sequence(tasks), Duration.Inf))
 
     val listIndex = data.sortBy(_._1)
     println(s"${Console.YELLOW_B}listindex after range cmds inserted: ${TestHelper.saveListIndex(indexId, listIndex, storage.session, rangeBuilder.keySerializer, rangeBuilder.valueSerializer)}${Console.RESET}")
+
+    val client = new ClusterClient[K, V](ctx)(clusterMetaBuilder, session, Serializers.grpcRangeCommandSerializer)
+    Await.result(client.start(), Duration.Inf)
+
+    val task = client.execute(commands).flatMap(cmds => client.sendTasks(cmds.values.toSeq))
+
+    println("result tasks: ", Await.result(task, Duration.Inf))
 
     def compare(): Unit = {
       val indexDataFromDisk = LoadIndexDemo.loadAll().toList
@@ -210,7 +183,7 @@ class ClusterIndexSpec extends Repeatable with Matchers {
 
     compare()
 
-    Await.result(Future.sequence(pool.map(_.close())).flatMap(_ => storage.close()), Duration.Inf)
+    Await.result(client.close().flatMap(_ => storage.close()), Duration.Inf)
     session.close()
   }
 

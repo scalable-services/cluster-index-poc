@@ -120,12 +120,31 @@ class ClusterClient[K, V](val metaCtx: IndexContext)(implicit val metaBuilder: I
 
           println(s"${Console.YELLOW_B} TRYING COMMANDS AGAIN... SUCCEED: ${succeed.length} not succeed: ${notSucceed.length} ${Console.RESET}")
 
+          val meta = Await.result(TestHelper.loadIndex(TestConfig.CLUSTER_INDEX_NAME), Duration.Inf).get
+          val metai = new QueryableIndex[K, KeyIndexContext](meta)(metaBuilder)
+          val inOrder = Await.result(TestHelper.all(metai.inOrder()), Duration.Inf)
+
+          val rn = inOrder.filter { x =>
+            notSucceed.exists{y => y.rangeId == x._2.rangeId}
+          }
+
+          val beforeAndNow = notSucceed.map { c =>
+            (c.rangeId, rn.find(_._2.rangeId == c.rangeId).get._2.lastChangeVersion, c.lastChangeVersion)
+          }
+
+          println(s"${Console.CYAN_B} before and now: ${beforeAndNow} ${Console.RESET}")
+
           TestHelper.loadIndex(metaCtx.id).map(_.get).flatMap { freshCtx =>
             val client = new ClusterClient[K, V](freshCtx)
 
             client.start().flatMap { _ =>
               client.execute(notSucceed.map(_.commands).flatten).flatMap { rangeCmds =>
-                client.sendTasks(rangeCmds.values.toSeq)
+
+                val rc = rangeCmds.values.toSeq
+
+                println(s"${Console.MAGENTA_B}[${client.client_uuid}] task ids: ${rc.map(c => (c.id, c.rangeId, c.lastChangeVersion))}${Console.RESET}...")
+
+                client.sendTasks(rc)
               }.flatMap(res => client.close().map(_ => res))
             }
           }

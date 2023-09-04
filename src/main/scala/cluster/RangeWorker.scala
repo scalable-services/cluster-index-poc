@@ -15,7 +15,7 @@ import org.apache.kafka.clients.producer.ProducerRecord
 import org.apache.kafka.common.serialization.{ByteArrayDeserializer, ByteArraySerializer, StringDeserializer, StringSerializer}
 import org.slf4j.LoggerFactory
 import services.scalable.index.grpc.IndexContext
-import services.scalable.index.{Bytes, Commands, IndexBuilder}
+import services.scalable.index.{Bytes, Commands, IndexBuilder, QueryableIndex}
 
 import java.util.UUID
 import scala.collection.concurrent.TrieMap
@@ -23,11 +23,13 @@ import scala.concurrent.duration.Duration
 import scala.concurrent.{Await, Future, Promise}
 import scala.util.hashing.MurmurHash3
 
-class RangeWorker[K, V](val id: String, intid: Int)(implicit val rangeBuilder: RangeBuilder[K, V],
-                                                    val clusterIndexBuilder: IndexBuilder[K, KeyIndexContext]) {
+class RangeWorker[K, V](val id: String, intid: Int)(implicit val rangeBuilder: IndexBuilder[K, V],
+                                                    val clusterIndexBuilder: IndexBuilder[K, KeyIndexContext],
+                                                    val rangeCommandSerializer: GrpcRangeCommandSerializer[K, V],
+                                                    val metaCommandSerializer: GrpcMetaCommandSerializer[K]) {
 
   import clusterIndexBuilder._
-  implicit val session = rangeBuilder.session
+  //implicit val session = rangeBuilder.session
 
   val RESPONSE_TOPIC = s"${TestConfig.RESPONSE_TOPIC}-$intid"
 
@@ -61,7 +63,7 @@ class RangeWorker[K, V](val id: String, intid: Int)(implicit val rangeBuilder: R
   def sendMetaTask(task: MetaCommand[K]): Future[Boolean] = {
     val pr = Promise[Boolean]()
 
-    val buf = rangeBuilder.metaCommandSerializer.serialize(task)
+    val buf = metaCommandSerializer.serialize(task)
     val records = Seq(
       new ProducerRecord[String, Bytes](TestConfig.META_INDEX_TOPIC, task.id, buf)
     )
@@ -88,7 +90,7 @@ class RangeWorker[K, V](val id: String, intid: Int)(implicit val rangeBuilder: R
 
   def process(msg: Array[Byte]): Future[Boolean] = {
     val task = Any.parseFrom(msg).unpack(RangeTask)
-    val cmdTask = rangeBuilder.rangeCommandSerializer.deserialize(msg)
+    val cmdTask = rangeCommandSerializer.deserialize(msg)
 
     println(s"${Console.GREEN_B}processing task ${task.id}...${Console.RESET}")
 
@@ -127,8 +129,8 @@ class RangeWorker[K, V](val id: String, intid: Int)(implicit val rangeBuilder: R
 
       def updateOrRemove(): Future[(Boolean, Boolean)] = {
         val createdRanges = cindex.ranges.size > 1
-        val currentMax = range.max._1
-        val maxChanged = !rangeBuilder.ordering.equiv(previousMax._1, currentMax)
+        val currentMax = Await.result(range.max.map(_.get), Duration.Inf)
+        val maxChanged = !rangeBuilder.ord.equiv(previousMax._1, currentMax)
 
         if (createdRanges || maxChanged) {
 
@@ -167,7 +169,7 @@ class RangeWorker[K, V](val id: String, intid: Int)(implicit val rangeBuilder: R
     }
 
     def execute(cindex: ClusterIndex[K, V]): Future[(Boolean, Boolean)] = {
-      val previousMax = rangeBuilder.ks.deserialize(task.keyInMeta.key.toByteArray)
+      val previousMax = rangeBuilder.keySerializer.deserialize(task.keyInMeta.key.toByteArray)
 
       cindex.execute(commands, version).map { br =>
 
@@ -194,21 +196,30 @@ class RangeWorker[K, V](val id: String, intid: Int)(implicit val rangeBuilder: R
     // Create a client-side stub for the service
     val client: ClusterClientResponseServiceClient = ClusterClientResponseServiceClient(clientSettings)
 
-    TestHelper.getRange(task.rangeId).map(_.get).flatMap { rangeMeta =>
+    storage.loadIndex(task.rangeId).map(_.get).flatMap { rangeMeta =>
       val rangeVersion = rangeMeta.lastChangeVersion
       val hasChanged = task.lastChangeVersion.compareTo(rangeVersion) != 0
 
-      assert(!rangeMeta.data.isEmpty || hasChanged)
+      val cond = rangeMeta.numElements == 0 || hasChanged
 
-      println(s"${Console.YELLOW_B}CHECKING VERSION FOR ${task.rangeId}... last version: ${task.lastChangeVersion} meta version: ${rangeMeta.lastChangeVersion} IS EMPTY: ${rangeMeta.data.isEmpty} ${Console.RESET}")
+      //assert(cond, "condition failed")
+
+      //println(s"${Console.YELLOW_B}CHECKING VERSION FOR ${task.rangeId}... last version: ${task.lastChangeVersion} meta version: ${rangeMeta.lastChangeVersion} IS EMPTY: ${rangeMeta.numElements == 0} ${Console.RESET}")
 
       if (hasChanged) {
-        println(s"\n\n${Console.RED_B} RANGE ${task.rangeId} HAS CHANGED FROM ${task.lastChangeVersion} to ${rangeVersion}... REDIRECTING OPERATIONS...${Console.RESET}\n\n")
+        println(s"\n\n${Console.RED_B}TASK ID ${task.id} RANGE ${task.rangeId} HAS CHANGED FROM ${task.lastChangeVersion} to ${rangeVersion}... REDIRECTING OPERATIONS...${Console.RESET}\n\n")
 
-        // Retry on client side...
-        //sendResponse(RangeTaskResponse(task.id, task.responseTopic, false))
+        val meta = Await.result(TestHelper.loadIndex(TestConfig.CLUSTER_INDEX_NAME), Duration.Inf).get
+        val metai = new QueryableIndex[K, KeyIndexContext](meta)(clusterIndexBuilder)
+        val inOrder = Await.result(TestHelper.all(metai.inOrder()), Duration.Inf)
 
-        client.respond(RangeTaskResponse(task.id, task.responseTopic, false, false)).map(_.ok)
+        val rn = inOrder.find { x =>
+          x._2.rangeId == task.rangeId
+        }
+
+        println(s"${Console.CYAN_B} ${task.rangeId} => new version = lastversion = ${rangeVersion == rn.get._2.lastChangeVersion} ${Console.RESET}")
+
+        client.respond(RangeTaskResponse(task.id, task.responseTopic, false, true)).map(_.ok)
       } else {
         ClusterIndex.fromRangeIndexId[K, V](task.rangeId, TestConfig.MAX_RANGE_ITEMS)
           .flatMap(execute)
