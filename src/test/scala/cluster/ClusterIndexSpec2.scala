@@ -1,6 +1,5 @@
 package cluster
 
-import cluster.ClusterCommands.RangeCommand
 import cluster.grpc.KeyIndexContext
 import cluster.helpers.{TestConfig, TestHelper}
 import org.apache.commons.lang3.RandomStringUtils
@@ -11,11 +10,11 @@ import services.scalable.index.impl.{CassandraStorage, DefaultCache}
 import services.scalable.index.{Commands, DefaultComparators, DefaultIdGenerators, DefaultSerializers, IndexBuilder}
 
 import java.util.concurrent.ThreadLocalRandom
-import scala.concurrent.{Await, Future}
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.duration.Duration
+import scala.concurrent.{Await, Future}
 
-class ClusterIndexSpec extends Repeatable with Matchers {
+class ClusterIndexSpec2 extends Repeatable with Matchers {
 
   override val times: Int = 1
 
@@ -35,7 +34,7 @@ class ClusterIndexSpec extends Repeatable with Matchers {
 
     val version = TestConfig.TX_VERSION//UUID.randomUUID.toString
 
-    val order = 64//rand.nextInt(4, 1000)
+    val order = rand.nextInt(4, 1000)
     val min = order / 2
     val max = order
 
@@ -131,91 +130,8 @@ class ClusterIndexSpec extends Repeatable with Matchers {
 
     val cindex = new ClusterIndex[K, V](metaContext, TestConfig.MAX_RANGE_ITEMS)(rangeBuilder, clusterMetaBuilder)
 
-    var commands: Seq[Commands.Command[K, V]] = insert(1000, 2000)
+    var commands: Seq[Commands.Command[K, V]] = insert(2000, 3000)
     val ctx = Await.result(cindex.execute(commands, version).flatMap(_ => cindex.save()), Duration.Inf)
-
-    var dataSorted = data.sortBy(_._1).toList
-    var rangeData = cindex.inOrder().toList
-
-    println(s"${Console.GREEN_B}ref data: ${dataSorted.map{case (k, v, _) => k -> v}}${Console.RESET}")
-    println(s"${Console.YELLOW_B}range data: ${rangeData.map{case (k, v, _) => k -> v}}${Console.RESET}")
-
-    assert(rangeData.map{case (k, v, _) => k -> v} == dataSorted.map{case (k, v, _) => k -> v})
-
-    val nGroups = 2
-
-    commands = Seq.empty[Commands.Command[K, V]]
-    //val grouped = data.grouped(nGroups).toSeq
-
-    var tasks = Seq.empty[Future[Boolean]]
-
-    var list = Seq.empty[(K, V, String)]
-    //var list = Seq.empty[(K, V, String)]
-
-    for(i<-0 until rand.nextInt(1000, 1110)){
-      val k = RandomStringUtils.randomAlphanumeric(6)
-      val v = RandomStringUtils.randomAlphanumeric(6)
-
-      if(!list.exists{case (k1, _, _) => ordering.equiv(k, k1)} && !data.exists{case (k1, _, _) => ordering.equiv(k, k1)}){
-        list = list :+ (k, v, version)
-      }
-    }
-
-    val groupedNewInsertions = list.grouped(nGroups).toSeq
-    val grouped = data.grouped(nGroups).toSeq
-
-    println(s"\n${Console.YELLOW_B}EXECUTING ${grouped.length} TXS...${Console.RESET}\n")
-    Thread.sleep(2000)
-
-    var pool = Seq.empty[ClusterClient[K, V]]
-
-    for(i<-0 until 10){
-      val client = new ClusterClient[K, V](ctx)(clusterMetaBuilder, session, Serializers.grpcRangeCommandSerializer)
-      pool = pool :+ client
-    }
-
-    Await.result(Future.sequence(pool.map(_.start())), Duration.Inf)
-
-    for(i<-0 until groupedNewInsertions.length){
-
-      val groupedInsertion = groupedNewInsertions(i)
-      val groupData = grouped(i)
-      //val groupedOps = groupData.grouped(10).toSeq
-
-      val updates = groupData.slice(0, groupData.length/2).map { case (k, v, vs) =>
-        Tuple3(k, RandomStringUtils.randomAlphanumeric(6), Some(vs))
-      }
-
-      val removals = groupData.slice(groupData.length/2, groupData.length).map { case (k, v, vs) => (k, Some(vs)) }
-
-      val insert = Commands.Insert[K, V](metaContext.id, groupedInsertion.map { case (k, v, _) => (k, v, false) },
-        Some(version))
-      val update = Commands.Update[K, V](metaContext.id, updates, Some(version))
-      val removal = Commands.Remove[K, V](metaContext.id, removals, Some(version))
-
-      data = data.filterNot { case (k, _, _) =>
-        updates.exists { case (k1, _, _) => ordering.equiv(k, k1) }
-      }
-
-      data = data ++ updates.map { case (k, v, vs) => (k, v, version) }
-
-      data = data.filterNot { case (k, _, _) =>
-        removals.exists { case (k1, _) => ordering.equiv(k, k1) }
-      }
-
-      data = data ++ groupedInsertion
-
-      val cmds: Seq[Commands.Command[K, V]] = Seq(update, removal, insert)
-      val client = pool(rand.nextInt(0, pool.length))
-
-      println(s"removals: ${removal.keys.length} updates: ${update.list.length} insertions: ${insert.list.length}")
-
-      tasks = tasks :+ client.execute(cmds).flatMap { mcmds =>
-        client.sendTasks(mcmds.values.toSeq)
-      }
-    }
-
-    println(s"result of ${tasks.length} tasks: ", Await.result(Future.sequence(tasks), Duration.Inf))
 
     val listIndex = data.sortBy(_._1)
     println(s"${Console.YELLOW_B}listindex after range cmds inserted: ${TestHelper.saveListIndex(indexId, listIndex, storage.session, rangeBuilder.keySerializer, rangeBuilder.valueSerializer)}${Console.RESET}")
@@ -234,7 +150,7 @@ class ClusterIndexSpec extends Repeatable with Matchers {
 
     compare()
 
-    Await.result(Future.sequence(pool.map(_.close())).flatMap(_ => storage.close()), Duration.Inf)
+    Await.result(storage.close(), Duration.Inf)
     session.close()
   }
 

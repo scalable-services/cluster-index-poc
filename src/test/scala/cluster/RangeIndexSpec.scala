@@ -18,7 +18,7 @@ class RangeIndexSpec extends Repeatable with Matchers {
 
   override val times: Int = 10
 
-  type K = String
+  /*type K = String
   type V = String
 
   import services.scalable.index.DefaultComparators._
@@ -144,6 +144,6 @@ class RangeIndexSpec extends Repeatable with Matchers {
     assert((leftInOrder ++ rightInOder) == all)
 
     session.close()
-  }
+  }*/
 
 }

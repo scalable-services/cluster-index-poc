@@ -73,7 +73,7 @@ class MetaWorker[K, V](val id: String)(implicit val indexBuilder: IndexBuilder[K
           throw result.error.get
         }
 
-        val afterCommands = Await.result(TestHelper.all(meta.inOrder()), Duration.Inf).map{ x => indexBuilder.ks(x._1) -> x._2.lastChangeVersion}
+        val afterCommands = Await.result(TestHelper.all(meta.inOrder()), Duration.Inf).map{ x => indexBuilder.ks(x._1) -> (x._2.rangeId, x._2.lastChangeVersion)}
         println(s"${Console.GREEN_B}meta after: ${afterCommands}...${Console.RESET}")
 
         meta.save().flatMap(ctx => sendResponse(MetaTaskResponse(

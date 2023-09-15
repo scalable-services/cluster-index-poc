@@ -28,17 +28,15 @@ object RangeWorkersStarter {
       //implicit val storage = new MemoryStorage(NUM_LEAF_ENTRIES, NUM_META_ENTRIES)
       implicit val storage = new CassandraStorage(session, false)
 
-      val rangeBuilder = RangeBuilder[K, V](TestConfig.MAX_RANGE_ITEMS)(
+      val rangeBuilder = IndexBuilder.create[K, V](
         ordString,
-        session,
-        global,
         DefaultSerializers.stringSerializer,
-        DefaultSerializers.stringSerializer,
-        k => k,
-        v => v,
-        Serializers.grpcRangeCommandSerializer,
-        Serializers.grpcMetaCommandSerializer
+        DefaultSerializers.stringSerializer
       )
+
+      rangeBuilder.storage(storage)
+      rangeBuilder.cache(cache)
+      rangeBuilder.serializer(Serializers.grpcStringStringSerializer)
 
       val clusterMetaBuilder = IndexBuilder.create[String, KeyIndexContext](DefaultComparators.ordString,
         DefaultSerializers.stringSerializer, Serializers.keyIndexSerializer)
@@ -47,7 +45,8 @@ object RangeWorkersStarter {
         .serializer(Serializers.grpcStringKeyIndexContextSerializer)
         .valueToStringConverter(Printers.keyIndexContextToStringPrinter)
 
-      new RangeWorker[K, V](s"${TestConfig.RANGE_INDEX_TOPIC}-$i", i)(rangeBuilder, clusterMetaBuilder).system
+      new RangeWorker[K, V](s"${TestConfig.RANGE_INDEX_TOPIC}-$i", i)(rangeBuilder, clusterMetaBuilder,
+        Serializers.grpcRangeCommandSerializer, Serializers.grpcMetaCommandSerializer).system
     }
 
     //Await.result(Future.sequence(systems.map(_.whenTerminated)), Duration.Inf)

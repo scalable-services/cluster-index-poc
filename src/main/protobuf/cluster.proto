@@ -64,6 +64,7 @@ message RangeTaskResponse {
     string id = 1;
     string responseTopic = 2;
     bool ok = 3;
+    bool hasRootChanged = 4;
 }
 
 ////////////////////////////////////// The greeting service definition.

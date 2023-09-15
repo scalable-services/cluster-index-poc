@@ -36,6 +36,8 @@ package object cluster {
       override def deserialize(b: Bytes): KeyIndexContext = Any.parseFrom(b).unpack(KeyIndexContext)
     }
 
+    implicit val grpcStringStringSerializer = new GrpcByteSerializer[String, String]()
+
     implicit val grpcStringKeyIndexContextSerializer = new GrpcByteSerializer[String, KeyIndexContext]()
 
     implicit val grpcStringStringCommandsSerializer = new GrpcCommandSerializer[String, String]()
