@@ -120,8 +120,8 @@ class ClusterClient[K, V](val metaCtx: IndexContext)(implicit val metaBuilder: I
 
           println(s"${Console.YELLOW_B} TRYING COMMANDS AGAIN... SUCCEED: ${succeed.length} not succeed: ${notSucceed.length} ${Console.RESET}")
 
-          val meta = Await.result(TestHelper.loadIndex(TestConfig.CLUSTER_INDEX_NAME), Duration.Inf).get
-          val metai = new QueryableIndex[K, KeyIndexContext](meta)(metaBuilder)
+          val meta1 = Await.result(TestHelper.loadIndex(TestConfig.CLUSTER_INDEX_NAME), Duration.Inf).get
+          val metai = new QueryableIndex[K, KeyIndexContext](meta1)(metaBuilder)
           val inOrder = Await.result(TestHelper.all(metai.inOrder()), Duration.Inf)
 
           val rn = inOrder.filter { x =>
@@ -135,17 +135,18 @@ class ClusterClient[K, V](val metaCtx: IndexContext)(implicit val metaBuilder: I
           println(s"${Console.CYAN_B} before and now: ${beforeAndNow} ${Console.RESET}")
 
           TestHelper.loadIndex(metaCtx.id).map(_.get).flatMap { freshCtx =>
-            val client = new ClusterClient[K, V](freshCtx)
+            //val client = new ClusterClient[K, V](freshCtx)
 
-            client.start().flatMap { _ =>
-              client.execute(notSucceed.map(_.commands).flatten).flatMap { rangeCmds =>
+            meta = new QueryableIndex[K, KeyIndexContext](freshCtx)(metaBuilder)
+            val client = this
 
-                val rc = rangeCmds.values.toSeq
+            client.execute(notSucceed.map(_.commands).flatten).flatMap { rangeCmds =>
 
-                println(s"${Console.MAGENTA_B}[${client.client_uuid}] task ids: ${rc.map(c => (c.id, c.rangeId, c.lastChangeVersion))}${Console.RESET}...")
+              val rc = rangeCmds.values.toSeq
 
-                client.sendTasks(rc)
-              }.flatMap(res => client.close().map(_ => res))
+              println(s"${Console.MAGENTA_B}[${client.client_uuid}] task ids: ${rc.map(c => (c.id, c.rangeId, c.lastChangeVersion))}${Console.RESET}...")
+
+              client.sendTasks(rc)
             }
           }
       }
@@ -259,9 +260,7 @@ class ClusterClient[K, V](val metaCtx: IndexContext)(implicit val metaBuilder: I
       val (k, _, _) = list(0)
 
       findRange(k).map {
-        case None =>
-          println("none")
-          list.length
+        case None => list.length
         case Some((last, rctx, vs)) =>
 
           val idx = list.indexWhere { case (k, _, _) => ord.gt(k, last) }
@@ -330,41 +329,6 @@ class ClusterClient[K, V](val metaCtx: IndexContext)(implicit val metaBuilder: I
       true
     }
   }
-
-  // report successful binding
-
-  /*val consumerSettings = ConsumerSettings[String, Array[Byte]](system, new StringDeserializer, new ByteArrayDeserializer)
-    .withBootstrapServers("localhost:9092")
-    .withGroupId(clientId)
-    .withProperty(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest")
-    .withClientId(s"range-task-worker-${clientId}")
-  //.withPollInterval(java.time.Duration.ofMillis(10L))
-  // .withStopTimeout(java.time.Duration.ofHours(1))
-  //.withProperty(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, "1")
-  //.withStopTimeout(java.time.Duration.ofSeconds(1000L))
-
-  val committerSettings = CommitterSettings(system).withDelivery(CommitDelivery.waitForAck)
-
-  def handler(msg: ConsumerMessage.CommittableMessage[String, Array[Byte]]): Future[Boolean] = {
-    val r = Any.parseFrom(msg.record.value()).unpack(RangeTaskResponse)
-
-    println(s"client ${clientId} receiving ${r.id} ok: ${r.ok}")
-
-    rangeTasks.remove(r.id).map(_._2.success(r.ok))
-
-    Future.successful(true)
-  }
-
-  Consumer
-    .committableSource(consumerSettings, Subscriptions.topics(client_uuid))
-    .mapAsync(1) { msg =>
-      handler(msg).map(_ => msg.committableOffset)
-    }
-    .via(Committer.flow(committerSettings.withMaxBatch(1)))
-    .runWith(Sink.ignore)
-    .recover {
-      case e: RuntimeException => e.printStackTrace()
-    }*/
 
   def close(): Future[Boolean] = {
     system.terminate()

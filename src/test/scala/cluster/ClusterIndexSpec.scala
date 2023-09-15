@@ -142,7 +142,7 @@ class ClusterIndexSpec extends Repeatable with Matchers {
 
     assert(rangeData.map{case (k, v, _) => k -> v} == dataSorted.map{case (k, v, _) => k -> v})
 
-    val nGroups = 50
+    val nGroups = 2
 
     commands = Seq.empty[Commands.Command[K, V]]
     //val grouped = data.grouped(nGroups).toSeq
@@ -162,6 +162,10 @@ class ClusterIndexSpec extends Repeatable with Matchers {
     }
 
     val groupedNewInsertions = list.grouped(nGroups).toSeq
+    val grouped = data.grouped(nGroups).toSeq
+
+    println(s"\n${Console.YELLOW_B}EXECUTING ${grouped.length} TXS...${Console.RESET}\n")
+    Thread.sleep(2000)
 
     var pool = Seq.empty[ClusterClient[K, V]]
 
@@ -172,19 +176,39 @@ class ClusterIndexSpec extends Repeatable with Matchers {
 
     Await.result(Future.sequence(pool.map(_.start())), Duration.Inf)
 
-    val gnil = groupedNewInsertions.length
-
     for(i<-0 until groupedNewInsertions.length){
 
       val groupedInsertion = groupedNewInsertions(i)
+      val groupData = grouped(i)
+      //val groupedOps = groupData.grouped(10).toSeq
 
-      val insert = Seq(Commands.Insert[K, V](metaContext.id, groupedInsertion.map{case (k, v, _) => (k, v, false)},
-        Some(version)))
+      val updates = groupData.slice(0, groupData.length/2).map { case (k, v, vs) =>
+        Tuple3(k, RandomStringUtils.randomAlphanumeric(6), Some(vs))
+      }
+
+      val removals = groupData.slice(groupData.length/2, groupData.length).map { case (k, v, vs) => (k, Some(vs)) }
+
+      val insert = Commands.Insert[K, V](metaContext.id, groupedInsertion.map { case (k, v, _) => (k, v, false) },
+        Some(version))
+      val update = Commands.Update[K, V](metaContext.id, updates, Some(version))
+      val removal = Commands.Remove[K, V](metaContext.id, removals, Some(version))
+
+      data = data.filterNot { case (k, _, _) =>
+        updates.exists { case (k1, _, _) => ordering.equiv(k, k1) }
+      }
+
+      data = data ++ updates.map { case (k, v, vs) => (k, v, version) }
+
+      data = data.filterNot { case (k, _, _) =>
+        removals.exists { case (k1, _) => ordering.equiv(k, k1) }
+      }
 
       data = data ++ groupedInsertion
 
-      val cmds: Seq[Commands.Command[K, V]] = insert
+      val cmds: Seq[Commands.Command[K, V]] = Seq(update, removal, insert)
       val client = pool(rand.nextInt(0, pool.length))
+
+      println(s"removals: ${removal.keys.length} updates: ${update.list.length} insertions: ${insert.list.length}")
 
       tasks = tasks :+ client.execute(cmds).flatMap { mcmds =>
         client.sendTasks(mcmds.values.toSeq)
