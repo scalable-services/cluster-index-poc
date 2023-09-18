@@ -108,17 +108,19 @@ class RangeWorker[K, V](val id: String, intid: Int)(implicit val rangeBuilder: I
     }
 
     val fusedCmds = notChanged.map { case (r, _) => r.commands }.flatten
-    val rc = notChanged.head._1.withCommands(fusedCmds)
+    val task = notChanged.head._1//.withCommands(fusedCmds)
 
-    val msg = Any.pack(rc).toByteArray
+    //val msg = Any.pack(rc).toByteArray
 
-    val task = Any.parseFrom(msg).unpack(RangeTask)
-    val cmdTask = rangeCommandSerializer.deserialize(msg)
+    //val task = Any.parseFrom(msg).unpack(RangeTask)
+    //val cmdTask = rangeCommandSerializer.deserialize(msg)
+
+    val cmds = fusedCmds.map { c => rangeCommandSerializer.commandsSerializer.deserialize(c.toByteArray) }
 
     println(s"${Console.GREEN_B}processing task ${task.id}...${Console.RESET}")
 
     val version = TestConfig.TX_VERSION //UUID.randomUUID().toString
-    val commandList = cmdTask.commands
+    val commandList = cmds
 
     val updates = commandList.filter(_.isInstanceOf[Commands.Update[K, V]])
     val insertions = commandList.filter(_.isInstanceOf[Commands.Insert[K, V]])

@@ -115,12 +115,15 @@ class MetaWorker[K, V](val id: String)(implicit val indexBuilder: IndexBuilder[K
       Any.parseFrom(m.record.value()).unpack(MetaTask) -> m
     }
 
-    val head = msgs.head._1
+    val flattenedCmds = msgs.map(_._1.commands).flatten
+    val head = msgs.head._1//.withCommands(flattenedCmds)
 
-    val mt = head.withCommands(msgs.map(_._1.commands).flatten)
+    //val mt = head.withCommands(msgs.map(_._1.commands).flatten)
+    //val msg = Any.pack(mt).toByteArray
 
-    val msg = Any.pack(mt).toByteArray
-    val cmdTask = metaTaskSerializer.deserialize(msg)
+    //val cmdTask = metaTaskSerializer.deserialize(msg)
+
+    val commands = flattenedCmds.map { c => metaTaskSerializer.commandsSerializer.deserialize(c.toByteArray) }
 
     storage.loadIndex(head.metaId).map(_.get).flatMap { ctx =>
       val meta = new QueryableIndex[K, KeyIndexContext](ctx)(indexBuilder)
@@ -128,7 +131,7 @@ class MetaWorker[K, V](val id: String)(implicit val indexBuilder: IndexBuilder[K
       val beforeCommands = Await.result(TestHelper.all(meta.inOrder()), Duration.Inf).map{ x => indexBuilder.ks(x._1) -> x._2.lastChangeVersion}
       println(s"${Console.YELLOW_B}meta before : ${beforeCommands}...${Console.RESET}")
 
-      meta.execute(cmdTask.commands, TestConfig.TX_VERSION).flatMap { result =>
+      meta.execute(commands, TestConfig.TX_VERSION).flatMap { result =>
         if(result.error.isDefined) {
           println(result.error.get)
           throw result.error.get
