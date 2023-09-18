@@ -2,6 +2,7 @@ package cluster
 
 import akka.actor.ActorSystem
 import akka.grpc.GrpcClientSettings
+import akka.kafka.ConsumerMessage.CommittableOffsetBatch
 import akka.kafka.scaladsl.{Committer, Consumer, Producer}
 import akka.kafka._
 import akka.stream.scaladsl.{Sink, Source}
@@ -19,7 +20,7 @@ import services.scalable.index.{Bytes, Commands, IndexBuilder, QueryableIndex}
 
 import java.util.UUID
 import scala.collection.concurrent.TrieMap
-import scala.concurrent.duration.Duration
+import scala.concurrent.duration.{Duration, DurationInt}
 import scala.concurrent.{Await, Future, Promise}
 import scala.util.hashing.MurmurHash3
 
@@ -88,7 +89,29 @@ class RangeWorker[K, V](val id: String, intid: Int)(implicit val rangeBuilder: I
       .runWith(Producer.plainSink(settingsWithProducer)).map(_ => true)
   }
 
-  def process(msg: Array[Byte]): Future[Boolean] = {
+  def process(changed: Seq[(grpc.RangeTask, ConsumerMessage.CommittableMessage[String, Array[Byte]])],
+              notChanged: Seq[(grpc.RangeTask, ConsumerMessage.CommittableMessage[String, Array[Byte]])]): Future[Boolean] = {
+
+    if(notChanged.isEmpty){
+      return Future.sequence(changed.map { case (r, _) =>
+        // Configure the client by code:
+        val clientSettings = GrpcClientSettings.connectToServiceAt("127.0.0.1", r.responseTopic.toInt)
+          .withTls(false)
+
+        // Create a client-side stub for the service
+        val client: ClusterClientResponseServiceClient = ClusterClientResponseServiceClient(clientSettings)
+
+        client.respond(RangeTaskResponse(r.id, r.responseTopic, false, true))
+          .map(_.ok)
+          .flatMap(ok => client.close().map(_ => ok))
+      }).map(_ => true)
+    }
+
+    val fusedCmds = notChanged.map { case (r, _) => r.commands }.flatten
+    val rc = notChanged.head._1.withCommands(fusedCmds)
+
+    val msg = Any.pack(rc).toByteArray
+
     val task = Any.parseFrom(msg).unpack(RangeTask)
     val cmdTask = rangeCommandSerializer.deserialize(msg)
 
@@ -102,10 +125,6 @@ class RangeWorker[K, V](val id: String, intid: Int)(implicit val rangeBuilder: I
     val removals = commandList.filter(_.isInstanceOf[Commands.Remove[K, V]])
 
     val commands = updates ++ insertions ++ removals
-
-    if (!(commands.forall(_.version.get == TestConfig.TX_VERSION))) {
-      println()
-    }
 
     def checkAfterExecution(cindex: ClusterIndex[K, V], previousMax: (K, Option[String])): Future[(Boolean, Boolean)] = {
 
@@ -186,65 +205,127 @@ class RangeWorker[K, V](val id: String, intid: Int)(implicit val rangeBuilder: I
         .flatMap(_ => checkAfterExecution(cindex, (previousMax, Some(task.keyInMeta.version))))
     }
 
-    // Configure the client by code:
-    val clientSettings = GrpcClientSettings.connectToServiceAt("127.0.0.1", task.responseTopic.toInt)
-      .withTls(false)
-
     // Or via application.conf:
     // val clientSettings = GrpcClientSettings.fromConfig(GreeterService.name)
 
-    // Create a client-side stub for the service
-    val client: ClusterClientResponseServiceClient = ClusterClientResponseServiceClient(clientSettings)
+    Future.sequence(changed.map { case (r, _) =>
+      // Configure the client by code:
+      val clientSettings = GrpcClientSettings.connectToServiceAt("127.0.0.1", r.responseTopic.toInt)
+        .withTls(false)
 
-    storage.loadIndex(task.rangeId).map(_.get).flatMap { rangeMeta =>
-      val rangeVersion = rangeMeta.lastChangeVersion
-      val hasChanged = task.lastChangeVersion.compareTo(rangeVersion) != 0
+      // Create a client-side stub for the service
+      val client: ClusterClientResponseServiceClient = ClusterClientResponseServiceClient(clientSettings)
 
-      val cond = rangeMeta.numElements == 0 || hasChanged
+      client.respond(RangeTaskResponse(r.id, r.responseTopic, false, true))
+        .map(_.ok)
+      .flatMap(ok => client.close().map(_ => ok))
+    })
+    .flatMap { _ =>
+      ClusterIndex.fromRangeIndexId[K, V](task.rangeId, TestConfig.MAX_RANGE_ITEMS)
+        .flatMap(execute)
+        .flatMap { case (ok, changed) =>
+          Future.sequence(notChanged.map { case (r, _) =>
+            // Configure the client by code:
+            val clientSettings = GrpcClientSettings.connectToServiceAt("127.0.0.1", r.responseTopic.toInt)
+              .withTls(false)
 
-      //assert(cond, "condition failed")
+            // Create a client-side stub for the service
+            val client: ClusterClientResponseServiceClient = ClusterClientResponseServiceClient(clientSettings)
 
-      //println(s"${Console.YELLOW_B}CHECKING VERSION FOR ${task.rangeId}... last version: ${task.lastChangeVersion} meta version: ${rangeMeta.lastChangeVersion} IS EMPTY: ${rangeMeta.numElements == 0} ${Console.RESET}")
+            client.respond(RangeTaskResponse(r.id, r.responseTopic, ok, changed))
+              .map(_.ok)
+            .flatMap(ok => client.close().map(_ => ok))
 
-      if (hasChanged) {
-        println(s"\n\n${Console.RED_B}TASK ID ${task.id} RANGE ${task.rangeId} HAS CHANGED FROM ${task.lastChangeVersion} to ${rangeVersion}... REDIRECTING OPERATIONS...${Console.RESET}\n\n")
-
-        val meta = Await.result(TestHelper.loadIndex(TestConfig.CLUSTER_INDEX_NAME), Duration.Inf).get
-        val metai = new QueryableIndex[K, KeyIndexContext](meta)(clusterIndexBuilder)
-        val inOrder = Await.result(TestHelper.all(metai.inOrder()), Duration.Inf)
-
-        val rn = inOrder.find { x =>
-          x._2.rangeId == task.rangeId
+          }).map(_.forall(_ == true))
         }
-
-        println(s"${Console.CYAN_B} ${task.rangeId} => new version = lastversion = ${rangeVersion == rn.get._2.lastChangeVersion} ${Console.RESET}")
-
-        client.respond(RangeTaskResponse(task.id, task.responseTopic, false, true)).map(_.ok)
-      } else {
-        ClusterIndex.fromRangeIndexId[K, V](task.rangeId, TestConfig.MAX_RANGE_ITEMS)
-          .flatMap(execute)
-          .flatMap { case (res, changed) =>
-            //sendResponse(RangeTaskResponse(task.id, task.responseTopic, true))
-            client.respond(RangeTaskResponse(task.id, task.responseTopic, true, changed)).map(_.ok)
-          }
-      }
-    }.flatMap(_ => client.close().map(_ => true))
+    }
   }
 
-  def handler(msg: ConsumerMessage.CommittableMessage[String, Array[Byte]]): Future[Boolean] = {
+  /*def handler(msg: ConsumerMessage.CommittableMessage[String, Array[Byte]]): Future[Boolean] = {
     process(msg.record.value())
+  }*/
+
+  /*def handler(records: Seq[ConsumerMessage.CommittableMessage[String, Array[Byte]]]): Future[Boolean] = {
+    val msgs = TrieMap.empty[String, Seq[(RangeTask, ConsumerMessage.CommittableMessage[String, Array[Byte]])]]
+
+    records.map { m =>
+      Any.parseFrom(m.record.value()).unpack(RangeTask) -> m
+    }.groupBy(_._1.rangeId).foreach { case (r, list) =>
+      msgs.put(r, list)
+    }
+
+    def processBatch(): Future[Boolean] = {
+      if(msgs.isEmpty) return Future.successful(true)
+
+      var list = Seq.empty[(RangeTask, ConsumerMessage.CommittableMessage[String, Array[Byte]])]
+
+      msgs.foreach { case (range, l) =>
+        if(l.isEmpty){
+          msgs.remove(range)
+        } else {
+          val e = l.head
+          list = list :+ e
+
+          msgs.update(range, l.filterNot{x => x._1.id == e._1.id})
+        }
+      }
+
+      Future.sequence(list.map { case (t, m) =>
+        process(m.record.value())
+      }).map(_.forall(_ == true)).flatMap(_ => processBatch())
+    }
+
+    processBatch()
+  }*/
+
+  def handler(records: Seq[ConsumerMessage.CommittableMessage[String, Array[Byte]]]): Future[Boolean] = {
+
+    val conversions = records.map { m =>
+      Any.parseFrom(m.record.value()).unpack(RangeTask) -> m
+    }.groupBy(_._1.rangeId)
+
+    val readVersions = Future.sequence(conversions.map { case (range, list) =>
+      storage.loadIndex(range).map(_.get).map { rangeMeta =>
+        range -> (rangeMeta, list)
+      }
+    })
+
+    readVersions.flatMap { versions =>
+
+      val flattened = versions.map { case (range, (ctx, list)) =>
+        val changed = list.filterNot{case (t, m) => t.lastChangeVersion == ctx.lastChangeVersion}
+        val notChanged = list.filter{case (t, m) => t.lastChangeVersion == ctx.lastChangeVersion}
+
+        range -> Tuple2(changed, notChanged)
+      }
+
+      Future.sequence(flattened.map { case (range, (changed, notChanged)) =>
+        process(changed, notChanged)
+      }).map(_.forall(_ == true))
+    }
   }
 
-    Consumer
-    .committableSource(taskConsumerSettings, Subscriptions.topics(s"${TestConfig.RANGE_INDEX_TOPIC}-${intid}"))
-    .mapAsync(1) { msg =>
-      handler(msg).map(_ => msg.committableOffset)
-    }
-    .via(Committer.flow(committerSettings.withMaxBatch(1)))
-    .runWith(Sink.ignore)
-    .recover {
-      case e: RuntimeException => e.printStackTrace()
-    }
+  Consumer
+  .committableSource(taskConsumerSettings, Subscriptions.topics(s"${TestConfig.RANGE_INDEX_TOPIC}-${intid}"))
+  .groupedWithin(50, 10.millis)
+  .mapAsync(1) { msgs =>
+    handler(msgs).map(_ => msgs.map(_.committableOffset))
+  }
+  .map { msgs =>
+    val maxOffset = msgs.maxBy(_.partitionOffset.offset)
+    println(s"max offset: ${maxOffset}")
+    maxOffset
+    //CommittableOffsetBatch(msgs)
+  }
+  /*.mapAsync(1){ msg =>
+    process(msg.record.value()).map(_ => msg.committableOffset)
+  }*/
+  .via(Committer.flow(committerSettings.withMaxBatch(50)))
+  //.via(Committer.flow(committerSettings.withMaxBatch(1)))
+  .runWith(Sink.ignore)
+  .recover {
+    case e: RuntimeException => e.printStackTrace()
+  }
 
   val responseConsumerSettings = ConsumerSettings[String, Array[Byte]](system, new StringDeserializer, new ByteArrayDeserializer)
     .withBootstrapServers("localhost:9092")
@@ -252,20 +333,39 @@ class RangeWorker[K, V](val id: String, intid: Int)(implicit val rangeBuilder: I
     .withProperty(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest")
     .withClientId(s"range-task-responses-${intid}")
 
-  def responseHandler(msg: ConsumerMessage.CommittableMessage[String, Array[Byte]]): Future[Boolean] = {
+  /*def responseHandler(msg: ConsumerMessage.CommittableMessage[String, Array[Byte]]): Future[Boolean] = {
     val status = Any.parseFrom(msg.record.value()).unpack(MetaTaskResponse)
 
     metaTasks.remove(status.id).map(_.success(true))
+
+    Future.successful(true)
+  }*/
+
+  def responseHandler(msgs: Seq[ConsumerMessage.CommittableMessage[String, Array[Byte]]]): Future[Boolean] = {
+    val statuses = msgs.map { msg =>
+      Any.parseFrom(msg.record.value()).unpack(MetaTaskResponse)
+    }
+
+    statuses.foreach { s =>
+      metaTasks.remove(s.id).map(_.success(true))
+    }
 
     Future.successful(true)
   }
 
   Consumer
     .committableSource(responseConsumerSettings, Subscriptions.topics(s"${TestConfig.RESPONSE_TOPIC}-${intid}"))
-    .mapAsync(1) { msg =>
-      responseHandler(msg).map(_ => msg.committableOffset)
+    .groupedWithin(50, 10.millis)
+    .mapAsync(1) { msgs =>
+      responseHandler(msgs).map(_ => msgs.map(_.committableOffset))
     }
-    .via(Committer.flow(committerSettings.withMaxBatch(1)))
+    .map { msgs =>
+      val maxOffset = msgs.maxBy(_.partitionOffset.offset)
+      //println(s"max offset: ${maxOffset}")
+      maxOffset
+      //CommittableOffsetBatch(msgs)
+    }
+    .via(Committer.flow(committerSettings.withMaxBatch(50)))
     .runWith(Sink.ignore)
     /*.recover {
       case e: RuntimeException => e.printStackTrace()

@@ -13,7 +13,7 @@ import org.apache.kafka.common.serialization.{ByteArrayDeserializer, ByteArraySe
 import org.slf4j.LoggerFactory
 import services.scalable.index.{Bytes, IndexBuilder, QueryableIndex}
 
-import scala.concurrent.duration.Duration
+import scala.concurrent.duration.{Duration, DurationInt}
 import scala.concurrent.{Await, Future}
 
 class MetaWorker[K, V](val id: String)(implicit val indexBuilder: IndexBuilder[K, KeyIndexContext],
@@ -55,7 +55,19 @@ class MetaWorker[K, V](val id: String)(implicit val indexBuilder: IndexBuilder[K
       .runWith(Producer.plainSink(settingsWithProducer)).map(_ => true)
   }
 
-  def handler(msg: ConsumerMessage.CommittableMessage[String, Array[Byte]]): Future[Boolean] = {
+  def sendResponses(responses: Seq[MetaTaskResponse]): Future[Boolean] = {
+    println(s"sending responses to topics ${responses.map(_.responseTopic)}...")
+
+    val records = responses.map { response =>
+      new ProducerRecord[String, Bytes](response.responseTopic,
+        response.id, Any.pack(response).toByteArray)
+    }
+
+    Source(records)
+      .runWith(Producer.plainSink(settingsWithProducer)).map(_ => true)
+  }
+
+  /*def handler(msg: ConsumerMessage.CommittableMessage[String, Array[Byte]]): Future[Boolean] = {
     val task = Any.parseFrom(msg.record.value()).unpack(MetaTask)
     val cmdTask = metaTaskSerializer.deserialize(msg.record.value())
 
@@ -93,6 +105,69 @@ class MetaWorker[K, V](val id: String)(implicit val indexBuilder: IndexBuilder[K
       handler(msg).map(_ => msg.committableOffset)
     }
     .via(Committer.flow(committerSettings.withMaxBatch(1)))
+    .runWith(Sink.ignore)
+    .recover {
+      case e: RuntimeException => e.printStackTrace()
+    }*/
+
+  def handler(records: Seq[ConsumerMessage.CommittableMessage[String, Array[Byte]]]): Future[Boolean] = {
+    val msgs = records.map { m =>
+      Any.parseFrom(m.record.value()).unpack(MetaTask) -> m
+    }
+
+    val head = msgs.head._1
+
+    val mt = head
+      .withCommands(msgs.map(_._1.commands).flatten)
+
+    val msg = Any.pack(mt).toByteArray
+    val cmdTask = metaTaskSerializer.deserialize(msg)
+
+    storage.loadIndex(head.metaId).map(_.get).flatMap { ctx =>
+      val meta = new QueryableIndex[K, KeyIndexContext](ctx)(indexBuilder)
+
+      val beforeCommands = Await.result(TestHelper.all(meta.inOrder()), Duration.Inf).map{ x => indexBuilder.ks(x._1) -> x._2.lastChangeVersion}
+      println(s"${Console.YELLOW_B}meta before : ${beforeCommands}...${Console.RESET}")
+
+      meta.execute(cmdTask.commands, TestConfig.TX_VERSION).flatMap { result =>
+        if(result.error.isDefined) {
+          println(result.error.get)
+          throw result.error.get
+        }
+
+        val afterCommands = Await.result(TestHelper.all(meta.inOrder()), Duration.Inf).map{ x => indexBuilder.ks(x._1) -> (x._2.rangeId, x._2.lastChangeVersion)}
+        println(s"${Console.GREEN_B}meta after: ${afterCommands}...${Console.RESET}")
+
+        meta.save().flatMap { ctx =>
+          sendResponses(msgs.map { case (task, m) =>
+            MetaTaskResponse(
+              task.id,
+              task.metaId,
+              task.responseTopic,
+              true,
+              Some(ctx)
+            )
+          })
+        }.map(_ => true)
+      }
+    }
+  }
+
+  val control = Consumer
+    .committableSource(consumerSettings, Subscriptions.topics(TestConfig.META_INDEX_TOPIC))
+
+    .groupedWithin(50, 10.millis)
+    .mapAsync(1) { msgs =>
+      handler(msgs).map(_ => msgs.map(_.committableOffset))
+    }
+    .map { msgs =>
+      val maxOffset = msgs.maxBy(_.partitionOffset.offset)
+      println(s"max offset: ${maxOffset}")
+      maxOffset
+      //CommittableOffsetBatch(msgs)
+    }
+
+    .via(Committer.flow(committerSettings.withMaxBatch(50)))
     .runWith(Sink.ignore)
     .recover {
       case e: RuntimeException => e.printStackTrace()
