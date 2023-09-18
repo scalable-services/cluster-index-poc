@@ -108,17 +108,12 @@ class RangeWorker[K, V](val id: String, intid: Int)(implicit val rangeBuilder: I
     }
 
     val fusedCmds = notChanged.map { case (r, _) => r.commands }.flatten
-    val task = notChanged.head._1.withCommands(fusedCmds)
+    val rc = notChanged.head._1.withCommands(fusedCmds)
 
-    //val msg = Any.pack(rc).toByteArray
+    val msg = Any.pack(rc).toByteArray
 
-    //val task = Any.parseFrom(msg).unpack(RangeTask)
-    //val cmdTask = rangeCommandSerializer.deserialize(msg)
-
-    val cmdTask = RangeCommand(task.id, task.rangeId, task.indexId,
-      task.commands.map { c => rangeCommandSerializer.commandsSerializer
-      .deserialize(c.toByteArray) }, Tuple2(rangeCommandSerializer.ks.deserialize(task.keyInMeta.key.toByteArray),
-        task.keyInMeta.version), task.lastChangeVersion, task.responseTopic)
+    val task = Any.parseFrom(msg).unpack(RangeTask)
+    val cmdTask = rangeCommandSerializer.deserialize(msg)
 
     println(s"${Console.GREEN_B}processing task ${task.id}...${Console.RESET}")
 

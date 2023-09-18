@@ -4,7 +4,6 @@ import akka.actor.ActorSystem
 import akka.kafka._
 import akka.kafka.scaladsl.{Committer, Consumer, Producer}
 import akka.stream.scaladsl.{Sink, Source}
-import cluster.ClusterCommands.MetaCommand
 import cluster.grpc.{KeyIndexContext, MetaTask, MetaTaskResponse}
 import cluster.helpers.{TestConfig, TestHelper}
 import com.google.protobuf.any.Any
@@ -120,12 +119,8 @@ class MetaWorker[K, V](val id: String)(implicit val indexBuilder: IndexBuilder[K
 
     val mt = head.withCommands(msgs.map(_._1.commands).flatten)
 
-    //val msg = Any.pack(mt).toByteArray
-    //val cmdTask = metaTaskSerializer.deserialize(msg)
-    val commands = msgs.map(_._1.commands).flatten
-
-    val cmdTask = MetaCommand(head.id, head.metaId, commands.map { c => metaTaskSerializer
-      .commandsSerializer.deserialize(c.toByteArray) }, head.responseTopic)
+    val msg = Any.pack(mt).toByteArray
+    val cmdTask = metaTaskSerializer.deserialize(msg)
 
     storage.loadIndex(head.metaId).map(_.get).flatMap { ctx =>
       val meta = new QueryableIndex[K, KeyIndexContext](ctx)(indexBuilder)
