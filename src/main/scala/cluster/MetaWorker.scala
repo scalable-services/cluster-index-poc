@@ -32,7 +32,7 @@ class MetaWorker[K, V](val id: String)(implicit val indexBuilder: IndexBuilder[K
     .withClientId(s"meta-task-worker")
     //.withPollInterval(java.time.Duration.ofMillis(10L))
    // .withStopTimeout(java.time.Duration.ofHours(1))
-  //.withProperty(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, "1")
+    .withProperty(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, "50")
   //.withStopTimeout(java.time.Duration.ofSeconds(1000L))
 
   val committerSettings = CommitterSettings(system).withDelivery(CommitDelivery.waitForAck)

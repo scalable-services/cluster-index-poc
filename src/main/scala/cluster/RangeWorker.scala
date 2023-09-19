@@ -48,7 +48,7 @@ class RangeWorker[K, V](val id: String, intid: Int)(implicit val rangeBuilder: I
     .withClientId(s"range-task-worker-${intid}")
     //.withPollInterval(java.time.Duration.ofMillis(10L))
    // .withStopTimeout(java.time.Duration.ofHours(1))
-    .withProperty(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, "1")
+    .withProperty(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, "50")
   //.withStopTimeout(java.time.Duration.ofSeconds(1000L))
 
   val committerSettings = CommitterSettings(system).withDelivery(CommitDelivery.waitForAck)
@@ -234,7 +234,7 @@ class RangeWorker[K, V](val id: String, intid: Int)(implicit val rangeBuilder: I
             // Create a client-side stub for the service
             val client: ClusterClientResponseServiceClient = ClusterClientResponseServiceClient(clientSettings)
 
-            client.respond(RangeTaskResponse(r.id, r.responseTopic, ok, changed))
+            client.respond(RangeTaskResponse(r.id, r.responseTopic, true, false))
               .map(_.ok)
             .flatMap(ok => client.close().map(_ => ok))
 
