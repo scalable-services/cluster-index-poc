@@ -1,8 +1,10 @@
 package cluster
 
 import akka.actor.ActorSystem
+import akka.kafka.ConsumerMessage.CommittableOffsetBatch
 import akka.kafka._
 import akka.kafka.scaladsl.{Committer, Consumer, Producer}
+import akka.stream.{ActorAttributes, Supervision}
 import akka.stream.scaladsl.{Sink, Source}
 import cluster.grpc.{KeyIndexContext, MetaTask, MetaTaskResponse}
 import cluster.helpers.{TestConfig, TestHelper}
@@ -155,24 +157,29 @@ class MetaWorker[K, V](val id: String)(implicit val indexBuilder: IndexBuilder[K
     }
   }
 
-  val control = Consumer
+  val decider: Supervision.Decider = {
+    case t =>
+      t.printStackTrace()
+      Supervision.Stop
+  }
+
+  val g = Consumer
     .committableSource(consumerSettings, Subscriptions.topics(TestConfig.META_INDEX_TOPIC))
 
-    .groupedWithin(50, 10.millis)
+    .groupedWithin(50, 100.millis)
     .mapAsync(1) { msgs =>
       handler(msgs).map(_ => msgs.map(_.committableOffset))
     }
     .map { msgs =>
-      val maxOffset = msgs.maxBy(_.partitionOffset.offset)
-      println(s"max offset: ${maxOffset}")
-      maxOffset
-      //CommittableOffsetBatch(msgs)
+      //val maxOffset = msgs.maxBy(_.partitionOffset.offset)
+      //println(s"max offset: ${maxOffset}")
+      //maxOffset
+      CommittableOffsetBatch(msgs.sortBy(_.partitionOffset.offset))
     }
 
     .via(Committer.flow(committerSettings.withMaxBatch(50)))
-    .runWith(Sink.ignore)
-    .recover {
-      case e: RuntimeException => e.printStackTrace()
-    }
+    .withAttributes(ActorAttributes.supervisionStrategy(decider))
+    //.runWith(Sink.ignore)
 
+    g.run()
 }

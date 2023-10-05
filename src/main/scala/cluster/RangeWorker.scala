@@ -5,6 +5,7 @@ import akka.grpc.GrpcClientSettings
 import akka.kafka.ConsumerMessage.CommittableOffsetBatch
 import akka.kafka.scaladsl.{Committer, Consumer, Producer}
 import akka.kafka._
+import akka.stream.{ActorAttributes, Supervision}
 import akka.stream.scaladsl.{Sink, Source}
 import cluster.ClusterCommands.{MetaCommand, RangeCommand}
 import cluster.grpc.{ClusterClientResponseServiceClient, KeyIndexContext, MetaTaskResponse, RangeTask, RangeTaskResponse}
@@ -22,6 +23,7 @@ import java.util.UUID
 import scala.collection.concurrent.TrieMap
 import scala.concurrent.duration.{Duration, DurationInt}
 import scala.concurrent.{Await, Future, Promise}
+import scala.util.control.NonFatal
 import scala.util.hashing.MurmurHash3
 
 class RangeWorker[K, V](val id: String, intid: Int)(implicit val rangeBuilder: IndexBuilder[K, V],
@@ -307,27 +309,33 @@ class RangeWorker[K, V](val id: String, intid: Int)(implicit val rangeBuilder: I
     }
   }
 
-  Consumer
+  val decider: Supervision.Decider = {
+    case t =>
+      t.printStackTrace()
+      Supervision.Stop
+  }
+
+  val rangeg = Consumer
   .committableSource(taskConsumerSettings, Subscriptions.topics(s"${TestConfig.RANGE_INDEX_TOPIC}-${intid}"))
-  .groupedWithin(50, 10.millis)
+  .groupedWithin(50, 100.millis)
   .mapAsync(1) { msgs =>
     handler(msgs).map(_ => msgs.map(_.committableOffset))
   }
   .map { msgs =>
-    val maxOffset = msgs.maxBy(_.partitionOffset.offset)
-    println(s"max offset: ${maxOffset}")
-    maxOffset
-    //CommittableOffsetBatch(msgs)
+    //val maxOffset = msgs.maxBy(_.partitionOffset.offset)
+    //println(s"max offset: ${maxOffset}")
+    //maxOffset
+    CommittableOffsetBatch(msgs.sortBy(_.partitionOffset.offset))
   }
   /*.mapAsync(1){ msg =>
     process(msg.record.value()).map(_ => msg.committableOffset)
   }*/
   .via(Committer.flow(committerSettings.withMaxBatch(50)))
   //.via(Committer.flow(committerSettings.withMaxBatch(1)))
-  .runWith(Sink.ignore)
-  .recover {
-    case e: RuntimeException => e.printStackTrace()
-  }
+  //.runWith(Sink.ignore)
+  .withAttributes(ActorAttributes.supervisionStrategy(decider))
+
+  rangeg.run()
 
   val responseConsumerSettings = ConsumerSettings[String, Array[Byte]](system, new StringDeserializer, new ByteArrayDeserializer)
     .withBootstrapServers("localhost:9092")
@@ -355,21 +363,21 @@ class RangeWorker[K, V](val id: String, intid: Int)(implicit val rangeBuilder: I
     Future.successful(true)
   }
 
-  Consumer
+  val responsesg = Consumer
     .committableSource(responseConsumerSettings, Subscriptions.topics(s"${TestConfig.RESPONSE_TOPIC}-${intid}"))
-    .groupedWithin(50, 10.millis)
+    .groupedWithin(50, 100.millis)
     .mapAsync(1) { msgs =>
       responseHandler(msgs).map(_ => msgs.map(_.committableOffset))
     }
     .map { msgs =>
-      val maxOffset = msgs.maxBy(_.partitionOffset.offset)
+      //val maxOffset = msgs.maxBy(_.partitionOffset.offset)
       //println(s"max offset: ${maxOffset}")
-      maxOffset
-      //CommittableOffsetBatch(msgs)
+      //maxOffset
+      CommittableOffsetBatch(msgs.sortBy(_.partitionOffset.offset))
     }
     .via(Committer.flow(committerSettings.withMaxBatch(50)))
-    .runWith(Sink.ignore)
-    /*.recover {
-      case e: RuntimeException => e.printStackTrace()
-    }*/
+    .withAttributes(ActorAttributes.supervisionStrategy(decider))
+
+  responsesg.run()
+
 }

@@ -16,7 +16,7 @@ package object cluster {
     DriverConfigLoader.programmaticBuilder()
       .withDuration(DefaultDriverOption.REQUEST_TIMEOUT, java.time.Duration.ofSeconds(30))
       .withInt(DefaultDriverOption.CONNECTION_MAX_REQUESTS, 31768)
-      .withInt(DefaultDriverOption.SESSION_LEAK_THRESHOLD, 1000)
+      .withInt(DefaultDriverOption.SESSION_LEAK_THRESHOLD, 10000)
       .withString(DefaultDriverOption.PROTOCOL_VERSION, "V4")
       .withString(DefaultDriverOption.RECONNECTION_POLICY_CLASS, "ExponentialReconnectionPolicy")
       .withDuration(DefaultDriverOption.RECONNECTION_BASE_DELAY, java.time.Duration.ofSeconds(1))
