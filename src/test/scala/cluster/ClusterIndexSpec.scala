@@ -35,7 +35,7 @@ class ClusterIndexSpec extends Repeatable with Matchers {
 
     val version = TestConfig.TX_VERSION//UUID.randomUUID.toString
 
-    val order = 64//rand.nextInt(4, 1000)
+    val order = 32//rand.nextInt(4, 1000)
     val min = order / 2
     val max = order
 
@@ -131,7 +131,7 @@ class ClusterIndexSpec extends Repeatable with Matchers {
 
     val cindex = new ClusterIndex[K, V](metaContext, TestConfig.MAX_RANGE_ITEMS)(rangeBuilder, clusterMetaBuilder)
 
-    var commands: Seq[Commands.Command[K, V]] = insert(1000, 2000)
+    var commands: Seq[Commands.Command[K, V]] = insert(1500, 3000)
     val ctx = Await.result(cindex.execute(commands, version).flatMap(_ => cindex.save()), Duration.Inf)
 
     var dataSorted = data.sortBy(_._1).toList
@@ -142,7 +142,7 @@ class ClusterIndexSpec extends Repeatable with Matchers {
 
     assert(rangeData.map{case (k, v, _) => k -> v} == dataSorted.map{case (k, v, _) => k -> v})
 
-    val nGroups = 2
+    val nGroups = 3
 
     commands = Seq.empty[Commands.Command[K, V]]
     //val grouped = data.grouped(nGroups).toSeq
@@ -152,7 +152,7 @@ class ClusterIndexSpec extends Repeatable with Matchers {
     var list = Seq.empty[(K, V, String)]
     //var list = Seq.empty[(K, V, String)]
 
-    for(i<-0 until rand.nextInt(1000, 1110)){
+    for(i<-0 until rand.nextInt(1000, 3000)){
       val k = RandomStringUtils.randomAlphanumeric(6)
       val v = RandomStringUtils.randomAlphanumeric(6)
 
@@ -165,7 +165,7 @@ class ClusterIndexSpec extends Repeatable with Matchers {
     val grouped = data.grouped(nGroups).toSeq
 
     println(s"\n${Console.YELLOW_B}EXECUTING ${grouped.length} TXS...${Console.RESET}\n")
-    Thread.sleep(2000)
+    //Thread.sleep(2000)
 
     var pool = Seq.empty[ClusterClient[K, V]]
 
