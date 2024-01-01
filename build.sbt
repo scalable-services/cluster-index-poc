@@ -2,6 +2,8 @@ ThisBuild / version := "0.10"
 
 ThisBuild / scalaVersion := "2.13.11"
 
+ThisBuild / organization := "services.scalable"
+
 lazy val root = (project in file("."))
   .settings(
     name := "cluster-index-poc"

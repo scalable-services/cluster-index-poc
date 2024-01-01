@@ -120,7 +120,7 @@ class ClusterIndex[K, V](val metaContext: IndexContext, val maxNItems: Int)(impl
     val rangeMeta = IndexContext()
       .withId(UUID.randomUUID.toString)
       .withLastChangeVersion(UUID.randomUUID.toString)
-      .withMaxNItems(TestConfig.MAX_RANGE_ITEMS)
+      .withMaxNItems(maxNItems)
       .withLevels(0)
       .withNumElements(0L)
       .withNumLeafItems(TestConfig.NUM_LEAF_ENTRIES)
@@ -148,7 +148,7 @@ class ClusterIndex[K, V](val metaContext: IndexContext, val maxNItems: Int)(impl
     val n = Math.min(remaining, list.length)
     val slice = list.slice(0, n)
 
-    assert(remaining >= 0)
+    assert(remaining >= 0, s"remaining >= 0 but remaining = ${remaining} lindex MaxNItems: ${lindex.index.ctx.maxNItems} lindex size: ${lindex.index.ctx.num_elements}")
 
     if (remaining == 0) {
       return lindex.split().flatMap { rindex =>
